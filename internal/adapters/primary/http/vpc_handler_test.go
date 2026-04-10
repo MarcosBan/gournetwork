@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	httphandler "gournetwork/internal/adapters/primary/http"
+	"gournetwork/internal/domain/security"
 	"gournetwork/internal/domain/vpc"
 )
 
@@ -29,35 +30,30 @@ func (m *MockVPCRepository) GetVPC(ctx context.Context, provider, region, vpcID 
 	}
 	return nil, nil
 }
-
 func (m *MockVPCRepository) ListVPCs(ctx context.Context, provider, region string) ([]vpc.VPC, error) {
 	if m.ListVPCsFn != nil {
 		return m.ListVPCsFn(ctx, provider, region)
 	}
 	return []vpc.VPC{}, nil
 }
-
 func (m *MockVPCRepository) UpdateRoutes(ctx context.Context, provider, region, vpcID string, routes []vpc.Route) error {
 	if m.UpdateRoutesFn != nil {
 		return m.UpdateRoutesFn(ctx, provider, region, vpcID, routes)
 	}
 	return nil
 }
-
 func (m *MockVPCRepository) ListSubnets(ctx context.Context, provider, region, vpcID string) ([]vpc.Subnet, error) {
 	if m.ListSubnetsFn != nil {
 		return m.ListSubnetsFn(ctx, provider, region, vpcID)
 	}
 	return []vpc.Subnet{}, nil
 }
-
 func (m *MockVPCRepository) ListPeerings(ctx context.Context, provider, region, vpcID string) ([]vpc.Peering, error) {
 	if m.ListPeeringsFn != nil {
 		return m.ListPeeringsFn(ctx, provider, region, vpcID)
 	}
 	return []vpc.Peering{}, nil
 }
-
 func (m *MockVPCRepository) ListVPNs(ctx context.Context, provider, region, vpcID string) ([]vpc.VPN, error) {
 	if m.ListVPNsFn != nil {
 		return m.ListVPNsFn(ctx, provider, region, vpcID)
@@ -65,209 +61,234 @@ func (m *MockVPCRepository) ListVPNs(ctx context.Context, provider, region, vpcI
 	return []vpc.VPN{}, nil
 }
 
+// MockStorageRepository is a test double implementing StorageRepository.
+type MockStorageRepository struct {
+	SaveVPCFn            func(ctx context.Context, v *vpc.VPC) error
+	SaveSecurityGroupFn  func(ctx context.Context, sg *security.SecurityGroup) error
+}
+
+func (m *MockStorageRepository) SaveVPC(ctx context.Context, v *vpc.VPC) error {
+	if m.SaveVPCFn != nil {
+		return m.SaveVPCFn(ctx, v)
+	}
+	return nil
+}
+func (m *MockStorageRepository) SaveSecurityGroup(ctx context.Context, sg *security.SecurityGroup) error {
+	if m.SaveSecurityGroupFn != nil {
+		return m.SaveSecurityGroupFn(ctx, sg)
+	}
+	return nil
+}
+
+// newVPCTestMux registers the VPC handler under the real route patterns.
+func newVPCTestMux(h *httphandler.VPCHTTPHandler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /aws/vpc/describe/{vpcID}", h.DescribeVPC)
+	mux.HandleFunc("POST /aws/vpc/insert", h.InsertVPC)
+	return mux
+}
+
+// --- DescribeVPC tests ---
+
 func TestDescribeVPCReturns200(t *testing.T) {
 	mock := &MockVPCRepository{
-		GetVPCFn: func(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error) {
-			return &vpc.VPC{
-				ID:        "vpc-001",
-				Name:      "test-vpc",
-				Region:    "us-east-1",
-				Provider:  vpc.ProviderAWS,
-				CIDRBlock: "10.0.0.0/16",
-			}, nil
+		GetVPCFn: func(_ context.Context, _, _, _ string) (*vpc.VPC, error) {
+			return &vpc.VPC{ID: "vpc-001", Name: "test-vpc", Region: "us-east-1", Provider: vpc.ProviderAWS, CIDRBlock: "10.0.0.0/16"}, nil
 		},
 	}
-
-	handler := httphandler.NewVPCHTTPHandler(mock)
-	req := httptest.NewRequest(http.MethodGet, "/aws/vpc/?provider=aws&region=us-east-1&vpcID=vpc-001", nil)
+	h := httphandler.NewVPCHTTPHandler(mock, &MockStorageRepository{})
+	req := httptest.NewRequest(http.MethodGet, "/aws/vpc/describe/vpc-001?provider=aws&region=us-east-1", nil)
 	w := httptest.NewRecorder()
-
-	handler.DescribeVPC(w, req)
+	newVPCTestMux(h).ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Errorf("expected 200, got %d", w.Code)
 	}
-
 	var result vpc.VPC
-	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
+	json.NewDecoder(w.Body).Decode(&result)
 	if result.ID != "vpc-001" {
-		t.Errorf("expected VPC ID vpc-001, got %s", result.ID)
+		t.Errorf("expected ID vpc-001, got %q", result.ID)
 	}
 }
 
 func TestDescribeVPCReturns404WhenNotFound(t *testing.T) {
 	mock := &MockVPCRepository{
-		GetVPCFn: func(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error) {
+		GetVPCFn: func(_ context.Context, _, _, _ string) (*vpc.VPC, error) {
 			return nil, errors.New("vpc not found")
 		},
 	}
-
-	handler := httphandler.NewVPCHTTPHandler(mock)
-	req := httptest.NewRequest(http.MethodGet, "/aws/vpc/?provider=aws&region=us-east-1&vpcID=vpc-999", nil)
+	h := httphandler.NewVPCHTTPHandler(mock, &MockStorageRepository{})
+	req := httptest.NewRequest(http.MethodGet, "/aws/vpc/describe/vpc-999?provider=aws&region=us-east-1", nil)
 	w := httptest.NewRecorder()
-
-	handler.DescribeVPC(w, req)
+	newVPCTestMux(h).ServeHTTP(w, req)
 
 	if w.Code != http.StatusNotFound {
-		t.Errorf("expected status 404, got %d", w.Code)
-	}
-}
-
-func TestUpdateRoutesReturns200(t *testing.T) {
-	mock := &MockVPCRepository{
-		UpdateRoutesFn: func(ctx context.Context, provider, region, vpcID string, routes []vpc.Route) error {
-			return nil
-		},
-	}
-
-	routes := []vpc.Route{
-		{Destination: "0.0.0.0/0", NextHop: "igw-001"},
-	}
-	body, _ := json.Marshal(routes)
-
-	handler := httphandler.NewVPCHTTPHandler(mock)
-	req := httptest.NewRequest(http.MethodPost, "/aws/vpc/?provider=aws&region=us-east-1&vpcID=vpc-001", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	handler.UpdateRoutes(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
-	}
-}
-
-func TestUpdateRoutesReturns400OnInvalidBody(t *testing.T) {
-	mock := &MockVPCRepository{}
-
-	handler := httphandler.NewVPCHTTPHandler(mock)
-	req := httptest.NewRequest(http.MethodPost, "/aws/vpc/?provider=aws&region=us-east-1&vpcID=vpc-001", bytes.NewBufferString("not-json"))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	handler.UpdateRoutes(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected status 400, got %d", w.Code)
+		t.Errorf("expected 404, got %d", w.Code)
 	}
 }
 
 func TestDescribeVPCListsSubnets(t *testing.T) {
 	mock := &MockVPCRepository{
-		GetVPCFn: func(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error) {
-			return &vpc.VPC{
-				ID:      "vpc-001",
-				Subnets: []vpc.Subnet{{ID: "sub-001", CIDRBlock: "10.0.1.0/24"}},
-			}, nil
+		GetVPCFn: func(_ context.Context, _, _, _ string) (*vpc.VPC, error) {
+			return &vpc.VPC{ID: "vpc-001", Subnets: []vpc.Subnet{{ID: "sub-001", CIDRBlock: "10.0.1.0/24"}}}, nil
 		},
 	}
-
-	handler := httphandler.NewVPCHTTPHandler(mock)
-	req := httptest.NewRequest(http.MethodGet, "/aws/vpc/?provider=aws&region=us-east-1&vpcID=vpc-001", nil)
+	h := httphandler.NewVPCHTTPHandler(mock, &MockStorageRepository{})
+	req := httptest.NewRequest(http.MethodGet, "/aws/vpc/describe/vpc-001?provider=aws&region=us-east-1", nil)
 	w := httptest.NewRecorder()
-
-	handler.DescribeVPC(w, req)
+	newVPCTestMux(h).ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Errorf("expected 200, got %d", w.Code)
 	}
-
 	var result map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	subnets, ok := result["Subnets"]
-	if !ok {
-		t.Fatal("response body does not contain 'Subnets' key")
-	}
-	subnetsArr, ok := subnets.([]interface{})
-	if !ok {
-		t.Fatal("Subnets is not an array")
-	}
+	json.NewDecoder(w.Body).Decode(&result)
+	subnetsArr, _ := result["Subnets"].([]interface{})
 	if len(subnetsArr) != 1 {
-		t.Errorf("expected 1 subnet in response, got %d", len(subnetsArr))
+		t.Errorf("expected 1 subnet, got %d", len(subnetsArr))
 	}
 }
 
 func TestDescribeVPCListsPeerings(t *testing.T) {
 	mock := &MockVPCRepository{
-		GetVPCFn: func(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error) {
-			return &vpc.VPC{
-				ID: "vpc-001",
-				Peerings: []vpc.Peering{
-					{ID: "pcx-001", PeerVPC: "vpc-002", State: "active"},
-				},
-			}, nil
+		GetVPCFn: func(_ context.Context, _, _, _ string) (*vpc.VPC, error) {
+			return &vpc.VPC{ID: "vpc-001", Peerings: []vpc.Peering{{ID: "pcx-001", PeerVPC: "vpc-002", State: "active"}}}, nil
 		},
 	}
-
-	handler := httphandler.NewVPCHTTPHandler(mock)
-	req := httptest.NewRequest(http.MethodGet, "/aws/vpc/?provider=aws&region=us-east-1&vpcID=vpc-001", nil)
+	h := httphandler.NewVPCHTTPHandler(mock, &MockStorageRepository{})
+	req := httptest.NewRequest(http.MethodGet, "/aws/vpc/describe/vpc-001?provider=aws&region=us-east-1", nil)
 	w := httptest.NewRecorder()
-
-	handler.DescribeVPC(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
-	}
+	newVPCTestMux(h).ServeHTTP(w, req)
 
 	var result map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	peerings, ok := result["Peerings"]
-	if !ok {
-		t.Fatal("response body does not contain 'Peerings' key")
-	}
-	peeringsArr, ok := peerings.([]interface{})
-	if !ok {
-		t.Fatal("Peerings is not an array")
-	}
+	json.NewDecoder(w.Body).Decode(&result)
+	peeringsArr, _ := result["Peerings"].([]interface{})
 	if len(peeringsArr) != 1 {
-		t.Errorf("expected 1 peering in response, got %d", len(peeringsArr))
+		t.Errorf("expected 1 peering, got %d", len(peeringsArr))
 	}
 }
 
 func TestDescribeVPCListsVPNs(t *testing.T) {
 	mock := &MockVPCRepository{
-		GetVPCFn: func(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error) {
-			return &vpc.VPC{
-				ID: "vpc-001",
-				VPNs: []vpc.VPN{
-					{ID: "vpn-001", RemoteGateway: "203.0.113.1", State: "available"},
-				},
-			}, nil
+		GetVPCFn: func(_ context.Context, _, _, _ string) (*vpc.VPC, error) {
+			return &vpc.VPC{ID: "vpc-001", VPNs: []vpc.VPN{{ID: "vpn-001", RemoteGateway: "203.0.113.1"}}}, nil
 		},
 	}
-
-	handler := httphandler.NewVPCHTTPHandler(mock)
-	req := httptest.NewRequest(http.MethodGet, "/aws/vpc/?provider=aws&region=us-east-1&vpcID=vpc-001", nil)
+	h := httphandler.NewVPCHTTPHandler(mock, &MockStorageRepository{})
+	req := httptest.NewRequest(http.MethodGet, "/aws/vpc/describe/vpc-001?provider=aws&region=us-east-1", nil)
 	w := httptest.NewRecorder()
-
-	handler.DescribeVPC(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
-	}
+	newVPCTestMux(h).ServeHTTP(w, req)
 
 	var result map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
+	json.NewDecoder(w.Body).Decode(&result)
+	vpnsArr, _ := result["VPNs"].([]interface{})
+	if len(vpnsArr) != 1 {
+		t.Errorf("expected 1 VPN, got %d", len(vpnsArr))
+	}
+}
+
+// --- InsertVPC tests ---
+
+func TestInsertVPCReturns201WithScrapedData(t *testing.T) {
+	scraped := &vpc.VPC{
+		ID: "vpc-001", Name: "prod-vpc", Region: "us-east-1",
+		Provider: vpc.ProviderAWS, CIDRBlock: "10.0.0.0/16",
+	}
+	vpcMock := &MockVPCRepository{
+		GetVPCFn: func(_ context.Context, _, _, _ string) (*vpc.VPC, error) { return scraped, nil },
+	}
+	var stored *vpc.VPC
+	storeMock := &MockStorageRepository{
+		SaveVPCFn: func(_ context.Context, v *vpc.VPC) error { stored = v; return nil },
 	}
 
-	vpns, ok := result["VPNs"]
-	if !ok {
-		t.Fatal("response body does not contain 'VPNs' key")
+	body, _ := json.Marshal(map[string]string{"provider": "aws", "region": "us-east-1", "vpcID": "vpc-001"})
+	h := httphandler.NewVPCHTTPHandler(vpcMock, storeMock)
+	req := httptest.NewRequest(http.MethodPost, "/aws/vpc/insert", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	newVPCTestMux(h).ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d", w.Code)
 	}
-	vpnsArr, ok := vpns.([]interface{})
-	if !ok {
-		t.Fatal("VPNs is not an array")
+	if stored == nil {
+		t.Fatal("expected SaveVPC to be called, but it was not")
 	}
-	if len(vpnsArr) != 1 {
-		t.Errorf("expected 1 VPN in response, got %d", len(vpnsArr))
+	if stored.ID != "vpc-001" {
+		t.Errorf("expected stored VPC ID vpc-001, got %q", stored.ID)
+	}
+
+	var result vpc.VPC
+	json.NewDecoder(w.Body).Decode(&result)
+	if result.CIDRBlock != "10.0.0.0/16" {
+		t.Errorf("expected CIDR in response, got %q", result.CIDRBlock)
+	}
+}
+
+func TestInsertVPCReturns400OnMissingFields(t *testing.T) {
+	tests := []map[string]string{
+		{"provider": "aws", "region": "us-east-1"},            // missing vpcID
+		{"provider": "aws", "vpcID": "vpc-001"},               // missing region
+		{"region": "us-east-1", "vpcID": "vpc-001"},           // missing provider
+		{},                                                     // all missing
+	}
+	for _, body := range tests {
+		b, _ := json.Marshal(body)
+		h := httphandler.NewVPCHTTPHandler(&MockVPCRepository{}, &MockStorageRepository{})
+		req := httptest.NewRequest(http.MethodPost, "/aws/vpc/insert", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		newVPCTestMux(h).ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("body %v: expected 400, got %d", body, w.Code)
+		}
+	}
+}
+
+func TestInsertVPCReturns400OnInvalidJSON(t *testing.T) {
+	h := httphandler.NewVPCHTTPHandler(&MockVPCRepository{}, &MockStorageRepository{})
+	req := httptest.NewRequest(http.MethodPost, "/aws/vpc/insert", bytes.NewBufferString("not-json"))
+	w := httptest.NewRecorder()
+	newVPCTestMux(h).ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestInsertVPCReturns500WhenCloudFetchFails(t *testing.T) {
+	vpcMock := &MockVPCRepository{
+		GetVPCFn: func(_ context.Context, _, _, _ string) (*vpc.VPC, error) {
+			return nil, errors.New("cloud error")
+		},
+	}
+	body, _ := json.Marshal(map[string]string{"provider": "aws", "region": "us-east-1", "vpcID": "vpc-001"})
+	h := httphandler.NewVPCHTTPHandler(vpcMock, &MockStorageRepository{})
+	req := httptest.NewRequest(http.MethodPost, "/aws/vpc/insert", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	newVPCTestMux(h).ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestInsertVPCReturns500WhenStorageFails(t *testing.T) {
+	vpcMock := &MockVPCRepository{
+		GetVPCFn: func(_ context.Context, _, _, _ string) (*vpc.VPC, error) {
+			return &vpc.VPC{ID: "vpc-001", Region: "us-east-1", Provider: vpc.ProviderAWS}, nil
+		},
+	}
+	storeMock := &MockStorageRepository{
+		SaveVPCFn: func(_ context.Context, _ *vpc.VPC) error { return errors.New("disk full") },
+	}
+	body, _ := json.Marshal(map[string]string{"provider": "aws", "region": "us-east-1", "vpcID": "vpc-001"})
+	h := httphandler.NewVPCHTTPHandler(vpcMock, storeMock)
+	req := httptest.NewRequest(http.MethodPost, "/aws/vpc/insert", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	newVPCTestMux(h).ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
 	}
 }

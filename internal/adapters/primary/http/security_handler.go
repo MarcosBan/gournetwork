@@ -4,21 +4,21 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"gournetwork/internal/domain/security"
 	"gournetwork/internal/ports/secondary"
 )
 
 // SecurityHTTPHandler handles HTTP requests for security group operations.
 type SecurityHTTPHandler struct {
-	repo secondary.CloudSecurityRepository
+	repo  secondary.CloudSecurityRepository
+	store secondary.StorageRepository
 }
 
-// NewSecurityHTTPHandler creates a new SecurityHTTPHandler with the provided repository.
-func NewSecurityHTTPHandler(repo secondary.CloudSecurityRepository) *SecurityHTTPHandler {
-	return &SecurityHTTPHandler{repo: repo}
+// NewSecurityHTTPHandler creates a new SecurityHTTPHandler with the provided repository and storage.
+func NewSecurityHTTPHandler(repo secondary.CloudSecurityRepository, store secondary.StorageRepository) *SecurityHTTPHandler {
+	return &SecurityHTTPHandler{repo: repo, store: store}
 }
 
-// DescribeSecurityGroup handles GET requests to describe a security group by ID.
+// DescribeSecurityGroup handles GET /aws/security-rules/describe and GET /gcp/security-rules/describe.
 func (h *SecurityHTTPHandler) DescribeSecurityGroup(w http.ResponseWriter, r *http.Request) {
 	provider := r.URL.Query().Get("provider")
 	region := r.URL.Query().Get("region")
@@ -35,28 +35,45 @@ func (h *SecurityHTTPHandler) DescribeSecurityGroup(w http.ResponseWriter, r *ht
 	json.NewEncoder(w).Encode(group)
 }
 
-// UpdateRule handles POST requests to update a security rule within a group.
-func (h *SecurityHTTPHandler) UpdateRule(w http.ResponseWriter, r *http.Request) {
-	provider := r.URL.Query().Get("provider")
-	region := r.URL.Query().Get("region")
-	groupID := r.URL.Query().Get("groupID")
+// insertSecurityGroupRequest is the request body for the InsertRule endpoint.
+type insertSecurityGroupRequest struct {
+	Provider string `json:"provider"`
+	Region   string `json:"region"`
+	GroupID  string `json:"groupID"`
+}
 
-	var rule security.SecurityRule
-	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+// InsertRule handles POST /aws/security-rules/insert and POST /gcp/security-rules/insert.
+// Accepts basic resource identifiers, scrapes the full security group from the cloud provider,
+// persists it as a JSON file under infra/databases/text/, and returns the scraped data.
+func (h *SecurityHTTPHandler) InsertRule(w http.ResponseWriter, r *http.Request) {
+	var req insertSecurityGroupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-
-	if err := h.repo.UpdateRule(r.Context(), provider, region, groupID, rule); err != nil {
-		http.Error(w, "failed to update rule", http.StatusInternalServerError)
+	if req.Provider == "" || req.Region == "" || req.GroupID == "" {
+		http.Error(w, "provider, region and groupID are required", http.StatusBadRequest)
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	group, err := h.repo.GetSecurityGroup(r.Context(), req.Provider, req.Region, req.GroupID)
+	if err != nil || group == nil {
+		http.Error(w, "failed to fetch security group from cloud provider", http.StatusInternalServerError)
+		return
+	}
+
+	if err = h.store.SaveSecurityGroup(r.Context(), group); err != nil {
+		http.Error(w, "failed to store security group", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(group)
 }
 
-// DeleteRule handles DELETE requests to remove a security rule from a group.
-func (h *SecurityHTTPHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
+// RemoveRule handles DELETE /aws/security-rules/remove and DELETE /gcp/security-rules/remove.
+func (h *SecurityHTTPHandler) RemoveRule(w http.ResponseWriter, r *http.Request) {
 	provider := r.URL.Query().Get("provider")
 	region := r.URL.Query().Get("region")
 	groupID := r.URL.Query().Get("groupID")

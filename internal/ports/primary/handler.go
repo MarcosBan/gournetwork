@@ -5,14 +5,14 @@ import "net/http"
 // VPCHandler defines the interface for VPC-related HTTP handlers.
 type VPCHandler interface {
 	DescribeVPC(w http.ResponseWriter, r *http.Request)
-	UpdateRoutes(w http.ResponseWriter, r *http.Request)
+	InsertVPC(w http.ResponseWriter, r *http.Request)
 }
 
 // SecurityHandler defines the interface for security group-related HTTP handlers.
 type SecurityHandler interface {
 	DescribeSecurityGroup(w http.ResponseWriter, r *http.Request)
-	UpdateRule(w http.ResponseWriter, r *http.Request)
-	DeleteRule(w http.ResponseWriter, r *http.Request)
+	InsertRule(w http.ResponseWriter, r *http.Request)
+	RemoveRule(w http.ResponseWriter, r *http.Request)
 }
 
 // AnalyseHandler defines the interface for connectivity analysis HTTP handlers.
