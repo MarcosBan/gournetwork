@@ -13,39 +13,34 @@ import (
 
 // MockMapRepository is a VPC repository mock for map handler tests.
 type MockMapRepository struct {
-	ListVPCsFn func(ctx context.Context, provider, region string) ([]vpc.VPC, error)
+	ListVPCsFn func(ctx context.Context, provider, account, region string) ([]vpc.VPC, error)
 }
 
-func (m *MockMapRepository) GetVPC(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error) {
+func (m *MockMapRepository) GetVPC(ctx context.Context, provider, account, region, vpcID string) (*vpc.VPC, error) {
 	return nil, nil
 }
-
-func (m *MockMapRepository) ListVPCs(ctx context.Context, provider, region string) ([]vpc.VPC, error) {
+func (m *MockMapRepository) ListVPCs(ctx context.Context, provider, account, region string) ([]vpc.VPC, error) {
 	if m.ListVPCsFn != nil {
-		return m.ListVPCsFn(ctx, provider, region)
+		return m.ListVPCsFn(ctx, provider, account, region)
 	}
 	return []vpc.VPC{}, nil
 }
-
-func (m *MockMapRepository) UpdateRoutes(ctx context.Context, provider, region, vpcID string, routes []vpc.Route) error {
+func (m *MockMapRepository) UpdateRoutes(ctx context.Context, provider, account, region, vpcID string, routes []vpc.Route) error {
 	return nil
 }
-
-func (m *MockMapRepository) ListSubnets(ctx context.Context, provider, region, vpcID string) ([]vpc.Subnet, error) {
+func (m *MockMapRepository) ListSubnets(ctx context.Context, provider, account, region, vpcID string) ([]vpc.Subnet, error) {
 	return []vpc.Subnet{}, nil
 }
-
-func (m *MockMapRepository) ListPeerings(ctx context.Context, provider, region, vpcID string) ([]vpc.Peering, error) {
+func (m *MockMapRepository) ListPeerings(ctx context.Context, provider, account, region, vpcID string) ([]vpc.Peering, error) {
 	return []vpc.Peering{}, nil
 }
-
-func (m *MockMapRepository) ListVPNs(ctx context.Context, provider, region, vpcID string) ([]vpc.VPN, error) {
+func (m *MockMapRepository) ListVPNs(ctx context.Context, provider, account, region, vpcID string) ([]vpc.VPN, error) {
 	return []vpc.VPN{}, nil
 }
 
 func TestGetNetworkMapReturns200(t *testing.T) {
 	mock := &MockMapRepository{
-		ListVPCsFn: func(ctx context.Context, provider, region string) ([]vpc.VPC, error) {
+		ListVPCsFn: func(ctx context.Context, provider, account, region string) ([]vpc.VPC, error) {
 			return []vpc.VPC{
 				{ID: "vpc-001", Name: "vpc-a", Region: "us-east-1"},
 				{ID: "vpc-002", Name: "vpc-b", Region: "us-west-2"},
@@ -54,7 +49,7 @@ func TestGetNetworkMapReturns200(t *testing.T) {
 	}
 
 	handler := httphandler.NewMapHTTPHandler(mock)
-	req := httptest.NewRequest(http.MethodGet, "/map", nil)
+	req := httptest.NewRequest(http.MethodGet, "/map?provider=aws&account=production&region=us-east-1", nil)
 	w := httptest.NewRecorder()
 
 	handler.GetNetworkMap(w, req)
@@ -83,7 +78,7 @@ func TestGetNetworkMapReturns200(t *testing.T) {
 
 func TestGetNetworkMapEmptyReturns200(t *testing.T) {
 	mock := &MockMapRepository{
-		ListVPCsFn: func(ctx context.Context, provider, region string) ([]vpc.VPC, error) {
+		ListVPCsFn: func(ctx context.Context, provider, account, region string) ([]vpc.VPC, error) {
 			return []vpc.VPC{}, nil
 		},
 	}
@@ -118,7 +113,7 @@ func TestGetNetworkMapEmptyReturns200(t *testing.T) {
 
 func TestGetNetworkMapResponseStructure(t *testing.T) {
 	mock := &MockMapRepository{
-		ListVPCsFn: func(ctx context.Context, provider, region string) ([]vpc.VPC, error) {
+		ListVPCsFn: func(ctx context.Context, provider, account, region string) ([]vpc.VPC, error) {
 			return []vpc.VPC{{ID: "vpc-001"}}, nil
 		},
 	}

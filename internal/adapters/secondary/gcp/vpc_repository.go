@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"google.golang.org/api/compute/v1"
-	"google.golang.org/api/option"
 
 	"gournetwork/internal/domain/vpc"
 )
@@ -97,59 +96,52 @@ func waitForGlobalOp(svc *compute.Service, project, opName string) error {
 }
 
 // GCPVPCRepository is the GCP implementation of CloudVPCRepository.
+// In production it uses a GCPClientRegistry to route calls per project alias;
+// in tests a single injected client and project ID are used instead.
 type GCPVPCRepository struct {
-	client  gcpVPCClient
-	project string
+	registry    *GCPClientRegistry
+	testClient  gcpVPCClient // non-nil only in test mode
+	testProject string       // used together with testClient
 }
 
-// NewGCPVPCRepository creates a new GCPVPCRepository using Application Default Credentials.
-// Returns an error if credentials cannot be established.
-func NewGCPVPCRepository(ctx context.Context, project string) (*GCPVPCRepository, error) {
-	return newGCPVPCRepositoryWithOptions(ctx, project)
-}
-
-// NewGCPVPCRepositoryWithCredentialsFile creates a repository authenticated via a service account JSON file.
-func NewGCPVPCRepositoryWithCredentialsFile(ctx context.Context, project, credentialsFile string) (*GCPVPCRepository, error) {
-	return newGCPVPCRepositoryWithOptions(ctx, project, option.WithCredentialsFile(credentialsFile))
-}
-
-// NewGCPVPCRepositoryWithCredentialsJSON creates a repository authenticated via a service account JSON blob.
-func NewGCPVPCRepositoryWithCredentialsJSON(ctx context.Context, project string, credentialsJSON []byte) (*GCPVPCRepository, error) {
-	return newGCPVPCRepositoryWithOptions(ctx, project, option.WithCredentialsJSON(credentialsJSON))
-}
-
-func newGCPVPCRepositoryWithOptions(ctx context.Context, project string, opts ...option.ClientOption) (*GCPVPCRepository, error) {
-	if project == "" {
-		return nil, fmt.Errorf("gcp project ID is required")
-	}
-	opts = append([]option.ClientOption{option.WithScopes(compute.ComputeScope)}, opts...)
-	svc, err := compute.NewService(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("gcp compute service: %w", err)
-	}
-	return &GCPVPCRepository{client: &computeServiceWrapper{svc: svc}, project: project}, nil
+// NewGCPVPCRepositoryFromRegistry creates a production repository backed by the given registry.
+func NewGCPVPCRepositoryFromRegistry(registry *GCPClientRegistry) *GCPVPCRepository {
+	return &GCPVPCRepository{registry: registry}
 }
 
 // newGCPVPCRepositoryWithClient creates a repository with an injected client (for tests).
 func newGCPVPCRepositoryWithClient(client gcpVPCClient, project string) *GCPVPCRepository {
-	return &GCPVPCRepository{client: client, project: project}
+	return &GCPVPCRepository{testClient: client, testProject: project}
+}
+
+// clientFor returns the GCP client and actual project ID for the given alias.
+// In test mode the injected client and project are always returned.
+func (r *GCPVPCRepository) clientFor(alias string) (gcpVPCClient, string, error) {
+	if r.testClient != nil {
+		return r.testClient, r.testProject, nil
+	}
+	return r.registry.vpcClient(alias)
 }
 
 // GetVPC retrieves a VPC (Network) by name from GCP.
-func (r *GCPVPCRepository) GetVPC(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error) {
-	net, err := r.client.GetNetwork(r.project, vpcID)
+func (r *GCPVPCRepository) GetVPC(ctx context.Context, provider, account, region, vpcID string) (*vpc.VPC, error) {
+	client, project, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	net, err := client.GetNetwork(project, vpcID)
 	if err != nil {
 		return nil, fmt.Errorf("get network: %w", err)
 	}
 	v := mapGCPNetwork(net)
 
-	subnets, err := r.ListSubnets(ctx, provider, region, vpcID)
+	subnets, err := r.ListSubnets(ctx, provider, account, region, vpcID)
 	if err != nil {
 		return nil, err
 	}
 	v.Subnets = subnets
 
-	routes, err := r.listRoutes(net.SelfLink)
+	routes, err := r.listRoutes(client, project, net.SelfLink)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +149,7 @@ func (r *GCPVPCRepository) GetVPC(ctx context.Context, provider, region, vpcID s
 
 	v.Peerings = mapGCPPeerings(net.Peerings)
 
-	vpns, err := r.ListVPNs(ctx, provider, region, vpcID)
+	vpns, err := r.ListVPNs(ctx, provider, account, region, vpcID)
 	if err != nil {
 		return nil, err
 	}
@@ -167,8 +159,12 @@ func (r *GCPVPCRepository) GetVPC(ctx context.Context, provider, region, vpcID s
 }
 
 // ListVPCs lists all networks in the GCP project.
-func (r *GCPVPCRepository) ListVPCs(ctx context.Context, provider, region string) ([]vpc.VPC, error) {
-	nets, err := r.client.ListNetworks(r.project)
+func (r *GCPVPCRepository) ListVPCs(ctx context.Context, provider, account, region string) ([]vpc.VPC, error) {
+	client, project, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	nets, err := client.ListNetworks(project)
 	if err != nil {
 		return nil, fmt.Errorf("list networks: %w", err)
 	}
@@ -180,32 +176,36 @@ func (r *GCPVPCRepository) ListVPCs(ctx context.Context, provider, region string
 }
 
 // UpdateRoutes replaces all custom routes for a GCP network.
-func (r *GCPVPCRepository) UpdateRoutes(ctx context.Context, provider, region, vpcID string, routes []vpc.Route) error {
-	net, err := r.client.GetNetwork(r.project, vpcID)
+func (r *GCPVPCRepository) UpdateRoutes(ctx context.Context, provider, account, region, vpcID string, routes []vpc.Route) error {
+	client, project, err := r.clientFor(account)
+	if err != nil {
+		return err
+	}
+	net, err := client.GetNetwork(project, vpcID)
 	if err != nil {
 		return fmt.Errorf("get network: %w", err)
 	}
-	existing, err := r.client.ListRoutes(r.project, net.SelfLink)
+	existing, err := client.ListRoutes(project, net.SelfLink)
 	if err != nil {
 		return fmt.Errorf("list routes: %w", err)
 	}
 	for _, rt := range existing {
 		if rt.NextHopGateway == "" {
-			if err = r.client.DeleteRoute(r.project, rt.Name); err != nil {
+			if err = client.DeleteRoute(project, rt.Name); err != nil {
 				return fmt.Errorf("delete route %q: %w", rt.Name, err)
 			}
 		}
 	}
 	for i, route := range routes {
 		gcpRoute := &compute.Route{
-			Name:        fmt.Sprintf("%s-route-%d", vpcID, i),
-			Network:     net.SelfLink,
-			DestRange:   route.Destination,
+			Name:           fmt.Sprintf("%s-route-%d", vpcID, i),
+			Network:        net.SelfLink,
+			DestRange:      route.Destination,
 			NextHopGateway: route.NextHop,
-			Priority:    int64(route.Priority),
-			Description: route.Description,
+			Priority:       int64(route.Priority),
+			Description:    route.Description,
 		}
-		if err = r.client.InsertRoute(r.project, gcpRoute); err != nil {
+		if err = client.InsertRoute(project, gcpRoute); err != nil {
 			return fmt.Errorf("insert route %q: %w", route.Destination, err)
 		}
 	}
@@ -213,12 +213,16 @@ func (r *GCPVPCRepository) UpdateRoutes(ctx context.Context, provider, region, v
 }
 
 // ListSubnets lists all subnetworks for a network in a given region.
-func (r *GCPVPCRepository) ListSubnets(ctx context.Context, provider, region, vpcID string) ([]vpc.Subnet, error) {
-	net, err := r.client.GetNetwork(r.project, vpcID)
+func (r *GCPVPCRepository) ListSubnets(ctx context.Context, provider, account, region, vpcID string) ([]vpc.Subnet, error) {
+	client, project, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	net, err := client.GetNetwork(project, vpcID)
 	if err != nil {
 		return nil, fmt.Errorf("get network: %w", err)
 	}
-	subs, err := r.client.ListSubnetworks(r.project, region, net.SelfLink)
+	subs, err := client.ListSubnetworks(project, region, net.SelfLink)
 	if err != nil {
 		return nil, fmt.Errorf("list subnetworks: %w", err)
 	}
@@ -236,8 +240,12 @@ func (r *GCPVPCRepository) ListSubnets(ctx context.Context, provider, region, vp
 }
 
 // ListPeerings lists all VPC peering connections for a network in GCP.
-func (r *GCPVPCRepository) ListPeerings(ctx context.Context, provider, region, vpcID string) ([]vpc.Peering, error) {
-	net, err := r.client.GetNetwork(r.project, vpcID)
+func (r *GCPVPCRepository) ListPeerings(ctx context.Context, provider, account, region, vpcID string) ([]vpc.Peering, error) {
+	client, project, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	net, err := client.GetNetwork(project, vpcID)
 	if err != nil {
 		return nil, fmt.Errorf("get network: %w", err)
 	}
@@ -245,13 +253,21 @@ func (r *GCPVPCRepository) ListPeerings(ctx context.Context, provider, region, v
 }
 
 // ListVPNs lists all VPN tunnels for a network in a region.
-func (r *GCPVPCRepository) ListVPNs(ctx context.Context, provider, region, vpcID string) ([]vpc.VPN, error) {
-	tunnels, err := r.client.ListVpnTunnels(r.project, region)
+func (r *GCPVPCRepository) ListVPNs(ctx context.Context, provider, account, region, vpcID string) ([]vpc.VPN, error) {
+	client, project, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	tunnels, err := client.ListVpnTunnels(project, region)
 	if err != nil {
 		return nil, fmt.Errorf("list vpn tunnels: %w", err)
 	}
 	result := make([]vpc.VPN, 0, len(tunnels))
 	for _, t := range tunnels {
+		localTraffic := ""
+		if len(t.LocalTrafficSelector) > 0 {
+			localTraffic = t.LocalTrafficSelector[0]
+		}
 		result = append(result, vpc.VPN{
 			ID:            t.Name,
 			Name:          t.Name,
@@ -262,7 +278,7 @@ func (r *GCPVPCRepository) ListVPNs(ctx context.Context, provider, region, vpcID
 			Tunnels: []vpc.VPNTunnel{
 				{
 					ID:       t.Name,
-					LocalIP:  t.LocalTrafficSelector[0],
+					LocalIP:  localTraffic,
 					RemoteIP: t.PeerIp,
 					State:    t.Status,
 				},
@@ -273,8 +289,8 @@ func (r *GCPVPCRepository) ListVPNs(ctx context.Context, provider, region, vpcID
 }
 
 // listRoutes retrieves all custom routes for a network identified by its self-link.
-func (r *GCPVPCRepository) listRoutes(networkSelfLink string) ([]vpc.Route, error) {
-	routes, err := r.client.ListRoutes(r.project, networkSelfLink)
+func (r *GCPVPCRepository) listRoutes(client gcpVPCClient, project, networkSelfLink string) ([]vpc.Route, error) {
+	routes, err := client.ListRoutes(project, networkSelfLink)
 	if err != nil {
 		return nil, fmt.Errorf("list routes: %w", err)
 	}
@@ -311,10 +327,10 @@ func mapGCPPeerings(peerings []*compute.NetworkPeering) []vpc.Peering {
 	result := make([]vpc.Peering, 0, len(peerings))
 	for _, p := range peerings {
 		result = append(result, vpc.Peering{
-			ID:      p.Name,
-			Name:    p.Name,
-			PeerVPC: networkNameFromURL(p.Network),
-			State:   p.State,
+			ID:       p.Name,
+			Name:     p.Name,
+			PeerVPC:  networkNameFromURL(p.Network),
+			State:    p.State,
 			Provider: vpc.ProviderGCP,
 		})
 	}

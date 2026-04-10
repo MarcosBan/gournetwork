@@ -20,11 +20,13 @@ func NewMapHTTPHandler(vpcRepo secondary.CloudVPCRepository) *MapHTTPHandler {
 }
 
 // GetNetworkMap handles GET requests to retrieve the full network connection map.
+// Query params: provider, account (credential alias), region.
 func (h *MapHTTPHandler) GetNetworkMap(w http.ResponseWriter, r *http.Request) {
 	provider := r.URL.Query().Get("provider")
+	account := r.URL.Query().Get("account")
 	region := r.URL.Query().Get("region")
 
-	vpcs, err := h.vpcRepo.ListVPCs(r.Context(), provider, region)
+	vpcs, err := h.vpcRepo.ListVPCs(r.Context(), provider, account, region)
 	if err != nil {
 		vpcs = nil // empty on error
 	}

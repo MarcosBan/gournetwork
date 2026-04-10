@@ -19,13 +19,14 @@ func NewVPCHTTPHandler(repo secondary.CloudVPCRepository, store secondary.Storag
 }
 
 // DescribeVPC handles GET /aws/vpc/describe/{vpcID} and GET /gcp/vpc/describe/{vpcID}.
-// The vpcID comes from the URL path segment; provider and region from query params.
+// Query params: provider, account (credential alias), region.
 func (h *VPCHTTPHandler) DescribeVPC(w http.ResponseWriter, r *http.Request) {
 	provider := r.URL.Query().Get("provider")
+	account := r.URL.Query().Get("account")
 	region := r.URL.Query().Get("region")
 	vpcID := r.PathValue("vpcID")
 
-	v, err := h.repo.GetVPC(r.Context(), provider, region, vpcID)
+	v, err := h.repo.GetVPC(r.Context(), provider, account, region, vpcID)
 	if err != nil || v == nil {
 		http.Error(w, "VPC not found", http.StatusNotFound)
 		return
@@ -33,15 +34,15 @@ func (h *VPCHTTPHandler) DescribeVPC(w http.ResponseWriter, r *http.Request) {
 
 	// Enrich with subnets, peerings, and VPNs if not already set.
 	if len(v.Subnets) == 0 {
-		subnets, _ := h.repo.ListSubnets(r.Context(), provider, region, vpcID)
+		subnets, _ := h.repo.ListSubnets(r.Context(), provider, account, region, vpcID)
 		v.Subnets = subnets
 	}
 	if len(v.Peerings) == 0 {
-		peerings, _ := h.repo.ListPeerings(r.Context(), provider, region, vpcID)
+		peerings, _ := h.repo.ListPeerings(r.Context(), provider, account, region, vpcID)
 		v.Peerings = peerings
 	}
 	if len(v.VPNs) == 0 {
-		vpns, _ := h.repo.ListVPNs(r.Context(), provider, region, vpcID)
+		vpns, _ := h.repo.ListVPNs(r.Context(), provider, account, region, vpcID)
 		v.VPNs = vpns
 	}
 
@@ -53,6 +54,7 @@ func (h *VPCHTTPHandler) DescribeVPC(w http.ResponseWriter, r *http.Request) {
 // insertVPCRequest is the request body for the InsertVPC endpoint.
 type insertVPCRequest struct {
 	Provider string `json:"provider"`
+	Account  string `json:"account"`
 	Region   string `json:"region"`
 	VpcID    string `json:"vpcID"`
 }
@@ -66,12 +68,12 @@ func (h *VPCHTTPHandler) InsertVPC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Provider == "" || req.Region == "" || req.VpcID == "" {
-		http.Error(w, "provider, region and vpcID are required", http.StatusBadRequest)
+	if req.Provider == "" || req.Account == "" || req.Region == "" || req.VpcID == "" {
+		http.Error(w, "provider, account, region and vpcID are required", http.StatusBadRequest)
 		return
 	}
 
-	v, err := h.repo.GetVPC(r.Context(), req.Provider, req.Region, req.VpcID)
+	v, err := h.repo.GetVPC(r.Context(), req.Provider, req.Account, req.Region, req.VpcID)
 	if err != nil || v == nil {
 		http.Error(w, "failed to fetch VPC from cloud provider", http.StatusInternalServerError)
 		return

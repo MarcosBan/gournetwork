@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	awslib "github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
@@ -53,50 +51,14 @@ func (m *mockEC2VPCClient) DeleteRoute(ctx context.Context, params *ec2.DeleteRo
 	return nil, m.deleteRouteErr
 }
 
-// --- auth tests ---
+// --- GetVPC ---
 
-// TestNewAWSVPCRepository_MissingCredentials verifies that the constructor returns an error
-// when credentials cannot be retrieved from the credential chain.
-func TestNewAWSVPCRepository_MissingCredentials(t *testing.T) {
-	ctx := context.Background()
-	_, err := newAWSVPCRepositoryWithOptions(ctx,
-		config.WithCredentialsProvider(aws_errorCredentials{}),
-	)
-	if err == nil {
-		t.Fatal("expected error when no credentials available, got nil")
-	}
-}
-
-// TestNewAWSVPCRepository_StaticCredentials verifies that the constructor succeeds
-// when valid static credentials are provided.
-func TestNewAWSVPCRepository_StaticCredentials(t *testing.T) {
-	ctx := context.Background()
-	repo, err := NewAWSVPCRepositoryWithStaticCredentials(ctx, "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "")
-	if err != nil {
-		t.Fatalf("expected no error with static credentials, got: %v", err)
-	}
-	if repo == nil {
-		t.Fatal("expected non-nil repository")
-	}
-}
-
-// TestNewAWSVPCRepository_EmptyCredentials verifies that empty key/secret returns an error.
-func TestNewAWSVPCRepository_EmptyCredentials(t *testing.T) {
-	ctx := context.Background()
-	_, err := NewAWSVPCRepositoryWithStaticCredentials(ctx, "", "", "")
-	if err == nil {
-		t.Fatal("expected error with empty credentials, got nil")
-	}
-}
-
-// TestAWSVPCRepository_GetVPC_AuthError verifies that an authentication failure from the SDK
-// is propagated as an error.
 func TestAWSVPCRepository_GetVPC_AuthError(t *testing.T) {
 	authErr := errors.New("AuthFailure: AWS was not able to validate the provided access credentials")
 	repo := newAWSVPCRepositoryWithClient(&mockEC2VPCClient{
 		describeVpcsErr: authErr,
 	})
-	_, err := repo.GetVPC(context.Background(), "aws", "us-east-1", "vpc-123")
+	_, err := repo.GetVPC(context.Background(), "aws", "test", "us-east-1", "vpc-123")
 	if err == nil {
 		t.Fatal("expected auth error to be propagated, got nil")
 	}
@@ -104,8 +66,6 @@ func TestAWSVPCRepository_GetVPC_AuthError(t *testing.T) {
 		t.Fatalf("expected original auth error in chain, got: %v", err)
 	}
 }
-
-// --- GetVPC ---
 
 func TestAWSVPCRepository_GetVPC(t *testing.T) {
 	mock := &mockEC2VPCClient{
@@ -118,13 +78,13 @@ func TestAWSVPCRepository_GetVPC(t *testing.T) {
 				},
 			},
 		},
-		describeSubnetsOut:     &ec2.DescribeSubnetsOutput{},
-		describeRouteTablesOut: &ec2.DescribeRouteTablesOutput{},
-		describeVpcPeeringsOut: &ec2.DescribeVpcPeeringConnectionsOutput{},
+		describeSubnetsOut:        &ec2.DescribeSubnetsOutput{},
+		describeRouteTablesOut:    &ec2.DescribeRouteTablesOutput{},
+		describeVpcPeeringsOut:    &ec2.DescribeVpcPeeringConnectionsOutput{},
 		describeVpnConnectionsOut: &ec2.DescribeVpnConnectionsOutput{},
 	}
 	repo := newAWSVPCRepositoryWithClient(mock)
-	got, err := repo.GetVPC(context.Background(), "aws", "us-east-1", "vpc-abc123")
+	got, err := repo.GetVPC(context.Background(), "aws", "test", "us-east-1", "vpc-abc123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -147,7 +107,7 @@ func TestAWSVPCRepository_GetVPC_NotFound(t *testing.T) {
 		describeVpcsOut: &ec2.DescribeVpcsOutput{Vpcs: []types.Vpc{}},
 	}
 	repo := newAWSVPCRepositoryWithClient(mock)
-	_, err := repo.GetVPC(context.Background(), "aws", "us-east-1", "vpc-missing")
+	_, err := repo.GetVPC(context.Background(), "aws", "test", "us-east-1", "vpc-missing")
 	if err == nil {
 		t.Fatal("expected not-found error, got nil")
 	}
@@ -165,7 +125,7 @@ func TestAWSVPCRepository_ListVPCs(t *testing.T) {
 		},
 	}
 	repo := newAWSVPCRepositoryWithClient(mock)
-	vpcs, err := repo.ListVPCs(context.Background(), "aws", "us-east-1")
+	vpcs, err := repo.ListVPCs(context.Background(), "aws", "test", "us-east-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,7 +137,7 @@ func TestAWSVPCRepository_ListVPCs(t *testing.T) {
 func TestAWSVPCRepository_ListVPCs_AuthError(t *testing.T) {
 	authErr := errors.New("UnauthorizedOperation")
 	repo := newAWSVPCRepositoryWithClient(&mockEC2VPCClient{describeVpcsErr: authErr})
-	_, err := repo.ListVPCs(context.Background(), "aws", "us-east-1")
+	_, err := repo.ListVPCs(context.Background(), "aws", "test", "us-east-1")
 	if err == nil {
 		t.Fatal("expected auth error to be propagated")
 	}
@@ -199,7 +159,7 @@ func TestAWSVPCRepository_ListSubnets(t *testing.T) {
 		},
 	}
 	repo := newAWSVPCRepositoryWithClient(mock)
-	subnets, err := repo.ListSubnets(context.Background(), "aws", "us-east-1", "vpc-abc123")
+	subnets, err := repo.ListSubnets(context.Background(), "aws", "test", "us-east-1", "vpc-abc123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,7 +190,7 @@ func TestAWSVPCRepository_ListPeerings(t *testing.T) {
 		},
 	}
 	repo := newAWSVPCRepositoryWithClient(mock)
-	peerings, err := repo.ListPeerings(context.Background(), "aws", "us-east-1", "vpc-abc123")
+	peerings, err := repo.ListPeerings(context.Background(), "aws", "test", "us-east-1", "vpc-abc123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -266,7 +226,7 @@ func TestAWSVPCRepository_ListVPNs(t *testing.T) {
 		},
 	}
 	repo := newAWSVPCRepositoryWithClient(mock)
-	vpns, err := repo.ListVPNs(context.Background(), "aws", "us-east-1", "vpc-abc123")
+	vpns, err := repo.ListVPNs(context.Background(), "aws", "test", "us-east-1", "vpc-abc123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -306,7 +266,7 @@ func TestAWSVPCRepository_UpdateRoutes(t *testing.T) {
 	routes := []vpc.Route{
 		{Destination: "10.2.0.0/16", NextHop: "pcx-456"},
 	}
-	if err := repo.UpdateRoutes(context.Background(), "aws", "us-east-1", "vpc-abc123", routes); err != nil {
+	if err := repo.UpdateRoutes(context.Background(), "aws", "test", "us-east-1", "vpc-abc123", routes); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -316,7 +276,7 @@ func TestAWSVPCRepository_UpdateRoutes_AuthError(t *testing.T) {
 	repo := newAWSVPCRepositoryWithClient(&mockEC2VPCClient{
 		describeRouteTablesErr: authErr,
 	})
-	err := repo.UpdateRoutes(context.Background(), "aws", "us-east-1", "vpc-abc123", nil)
+	err := repo.UpdateRoutes(context.Background(), "aws", "test", "us-east-1", "vpc-abc123", nil)
 	if err == nil {
 		t.Fatal("expected auth error to be propagated")
 	}
@@ -325,14 +285,14 @@ func TestAWSVPCRepository_UpdateRoutes_AuthError(t *testing.T) {
 	}
 }
 
-// --- helpers ---
+// --- registry account lookup ---
 
-// aws_errorCredentials is a credentials provider that always returns an error.
-type aws_errorCredentials struct{}
-
-func (aws_errorCredentials) Retrieve(ctx context.Context) (awslib.Credentials, error) {
-	return awslib.Credentials{}, errors.New("no credentials configured")
+func TestAWSVPCRepository_UnknownAccount(t *testing.T) {
+	// A registry with no accounts should return an error for any account name.
+	registry := &AWSClientRegistry{clients: map[string]*ec2.Client{}}
+	repo := NewAWSVPCRepositoryFromRegistry(registry)
+	_, err := repo.GetVPC(context.Background(), "aws", "nonexistent", "us-east-1", "vpc-123")
+	if err == nil {
+		t.Fatal("expected error for unknown account, got nil")
+	}
 }
-
-// Verify static credentials provider compiles correctly (used in constructor test).
-var _ = credentials.NewStaticCredentialsProvider

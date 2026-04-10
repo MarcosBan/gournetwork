@@ -15,66 +15,54 @@ import (
 
 // mockAnalyseVPCRepo is a VPC repository mock for analyse handler tests.
 type mockAnalyseVPCRepo struct {
-	GetVPCFn       func(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error)
-	ListVPCsFn     func(ctx context.Context, provider, region string) ([]vpc.VPC, error)
-	UpdateRoutesFn func(ctx context.Context, provider, region, vpcID string, routes []vpc.Route) error
-	ListSubnetsFn  func(ctx context.Context, provider, region, vpcID string) ([]vpc.Subnet, error)
-	ListPeeringsFn func(ctx context.Context, provider, region, vpcID string) ([]vpc.Peering, error)
-	ListVPNsFn     func(ctx context.Context, provider, region, vpcID string) ([]vpc.VPN, error)
+	GetVPCFn       func(ctx context.Context, provider, account, region, vpcID string) (*vpc.VPC, error)
+	ListVPCsFn     func(ctx context.Context, provider, account, region string) ([]vpc.VPC, error)
+	UpdateRoutesFn func(ctx context.Context, provider, account, region, vpcID string, routes []vpc.Route) error
+	ListSubnetsFn  func(ctx context.Context, provider, account, region, vpcID string) ([]vpc.Subnet, error)
+	ListPeeringsFn func(ctx context.Context, provider, account, region, vpcID string) ([]vpc.Peering, error)
+	ListVPNsFn     func(ctx context.Context, provider, account, region, vpcID string) ([]vpc.VPN, error)
 }
 
-func (m *mockAnalyseVPCRepo) GetVPC(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error) {
+func (m *mockAnalyseVPCRepo) GetVPC(ctx context.Context, provider, account, region, vpcID string) (*vpc.VPC, error) {
 	if m.GetVPCFn != nil {
-		return m.GetVPCFn(ctx, provider, region, vpcID)
+		return m.GetVPCFn(ctx, provider, account, region, vpcID)
 	}
 	return nil, nil
 }
-
-func (m *mockAnalyseVPCRepo) ListVPCs(ctx context.Context, provider, region string) ([]vpc.VPC, error) {
+func (m *mockAnalyseVPCRepo) ListVPCs(ctx context.Context, provider, account, region string) ([]vpc.VPC, error) {
 	if m.ListVPCsFn != nil {
-		return m.ListVPCsFn(ctx, provider, region)
+		return m.ListVPCsFn(ctx, provider, account, region)
 	}
 	return []vpc.VPC{}, nil
 }
-
-func (m *mockAnalyseVPCRepo) UpdateRoutes(ctx context.Context, provider, region, vpcID string, routes []vpc.Route) error {
+func (m *mockAnalyseVPCRepo) UpdateRoutes(ctx context.Context, provider, account, region, vpcID string, routes []vpc.Route) error {
 	if m.UpdateRoutesFn != nil {
-		return m.UpdateRoutesFn(ctx, provider, region, vpcID, routes)
+		return m.UpdateRoutesFn(ctx, provider, account, region, vpcID, routes)
 	}
 	return nil
 }
-
-func (m *mockAnalyseVPCRepo) ListSubnets(ctx context.Context, provider, region, vpcID string) ([]vpc.Subnet, error) {
+func (m *mockAnalyseVPCRepo) ListSubnets(ctx context.Context, provider, account, region, vpcID string) ([]vpc.Subnet, error) {
 	if m.ListSubnetsFn != nil {
-		return m.ListSubnetsFn(ctx, provider, region, vpcID)
+		return m.ListSubnetsFn(ctx, provider, account, region, vpcID)
 	}
 	return []vpc.Subnet{}, nil
 }
-
-func (m *mockAnalyseVPCRepo) ListPeerings(ctx context.Context, provider, region, vpcID string) ([]vpc.Peering, error) {
+func (m *mockAnalyseVPCRepo) ListPeerings(ctx context.Context, provider, account, region, vpcID string) ([]vpc.Peering, error) {
 	if m.ListPeeringsFn != nil {
-		return m.ListPeeringsFn(ctx, provider, region, vpcID)
+		return m.ListPeeringsFn(ctx, provider, account, region, vpcID)
 	}
 	return []vpc.Peering{}, nil
 }
-
-func (m *mockAnalyseVPCRepo) ListVPNs(ctx context.Context, provider, region, vpcID string) ([]vpc.VPN, error) {
+func (m *mockAnalyseVPCRepo) ListVPNs(ctx context.Context, provider, account, region, vpcID string) ([]vpc.VPN, error) {
 	if m.ListVPNsFn != nil {
-		return m.ListVPNsFn(ctx, provider, region, vpcID)
+		return m.ListVPNsFn(ctx, provider, account, region, vpcID)
 	}
 	return []vpc.VPN{}, nil
 }
 
-// mockAnalyseSecRepo is a security repository mock for analyse handler tests.
-type mockAnalyseSecRepo struct{}
-
-func (m *mockAnalyseSecRepo) GetSecurityGroup(ctx context.Context, provider, region, groupID string) (*network.ConnectivityResult, error) {
-	return nil, nil
-}
-
 func TestAnalyseConnectivityReturns200WithResult(t *testing.T) {
 	vpcMock := &mockAnalyseVPCRepo{
-		GetVPCFn: func(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error) {
+		GetVPCFn: func(ctx context.Context, provider, account, region, vpcID string) (*vpc.VPC, error) {
 			return &vpc.VPC{ID: vpcID, Name: "source-vpc"}, nil
 		},
 	}
@@ -82,7 +70,7 @@ func TestAnalyseConnectivityReturns200WithResult(t *testing.T) {
 
 	handler := httphandler.NewAnalyseHTTPHandler(vpcMock, secMock)
 
-	body := `{"source_vpc": "vpc-001", "destination_cidr": "10.1.0.0/16"}`
+	body := `{"provider":"aws","account":"production","region":"us-east-1","source_vpc":"vpc-001","destination_cidr":"10.1.0.0/16"}`
 	req := httptest.NewRequest(http.MethodPost, "/analyse", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -104,7 +92,7 @@ func TestAnalyseConnectivityReturns200WithResult(t *testing.T) {
 
 func TestAnalyseReturns200NotConnected(t *testing.T) {
 	vpcMock := &mockAnalyseVPCRepo{
-		GetVPCFn: func(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error) {
+		GetVPCFn: func(ctx context.Context, provider, account, region, vpcID string) (*vpc.VPC, error) {
 			// Return nil to simulate VPC not found, triggering not connected result.
 			return nil, nil
 		},
@@ -113,7 +101,7 @@ func TestAnalyseReturns200NotConnected(t *testing.T) {
 
 	handler := httphandler.NewAnalyseHTTPHandler(vpcMock, secMock)
 
-	body := `{"source_vpc": "vpc-999", "destination_cidr": "10.99.0.0/16"}`
+	body := `{"source_vpc":"vpc-999","destination_cidr":"10.99.0.0/16"}`
 	req := httptest.NewRequest(http.MethodPost, "/analyse", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

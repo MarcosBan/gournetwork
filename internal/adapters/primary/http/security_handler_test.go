@@ -15,33 +15,33 @@ import (
 
 // MockSecurityRepository is a test double implementing CloudSecurityRepository.
 type MockSecurityRepository struct {
-	GetSecurityGroupFn   func(ctx context.Context, provider, region, groupID string) (*security.SecurityGroup, error)
-	ListSecurityGroupsFn func(ctx context.Context, provider, region, vpcID string) ([]security.SecurityGroup, error)
-	UpdateRuleFn         func(ctx context.Context, provider, region, groupID string, rule security.SecurityRule) error
-	DeleteRuleFn         func(ctx context.Context, provider, region, groupID, ruleID string) error
+	GetSecurityGroupFn   func(ctx context.Context, provider, account, region, groupID string) (*security.SecurityGroup, error)
+	ListSecurityGroupsFn func(ctx context.Context, provider, account, region, vpcID string) ([]security.SecurityGroup, error)
+	UpdateRuleFn         func(ctx context.Context, provider, account, region, groupID string, rule security.SecurityRule) error
+	DeleteRuleFn         func(ctx context.Context, provider, account, region, groupID, ruleID string) error
 }
 
-func (m *MockSecurityRepository) GetSecurityGroup(ctx context.Context, provider, region, groupID string) (*security.SecurityGroup, error) {
+func (m *MockSecurityRepository) GetSecurityGroup(ctx context.Context, provider, account, region, groupID string) (*security.SecurityGroup, error) {
 	if m.GetSecurityGroupFn != nil {
-		return m.GetSecurityGroupFn(ctx, provider, region, groupID)
+		return m.GetSecurityGroupFn(ctx, provider, account, region, groupID)
 	}
 	return nil, nil
 }
-func (m *MockSecurityRepository) ListSecurityGroups(ctx context.Context, provider, region, vpcID string) ([]security.SecurityGroup, error) {
+func (m *MockSecurityRepository) ListSecurityGroups(ctx context.Context, provider, account, region, vpcID string) ([]security.SecurityGroup, error) {
 	if m.ListSecurityGroupsFn != nil {
-		return m.ListSecurityGroupsFn(ctx, provider, region, vpcID)
+		return m.ListSecurityGroupsFn(ctx, provider, account, region, vpcID)
 	}
 	return []security.SecurityGroup{}, nil
 }
-func (m *MockSecurityRepository) UpdateRule(ctx context.Context, provider, region, groupID string, rule security.SecurityRule) error {
+func (m *MockSecurityRepository) UpdateRule(ctx context.Context, provider, account, region, groupID string, rule security.SecurityRule) error {
 	if m.UpdateRuleFn != nil {
-		return m.UpdateRuleFn(ctx, provider, region, groupID, rule)
+		return m.UpdateRuleFn(ctx, provider, account, region, groupID, rule)
 	}
 	return nil
 }
-func (m *MockSecurityRepository) DeleteRule(ctx context.Context, provider, region, groupID, ruleID string) error {
+func (m *MockSecurityRepository) DeleteRule(ctx context.Context, provider, account, region, groupID, ruleID string) error {
 	if m.DeleteRuleFn != nil {
-		return m.DeleteRuleFn(ctx, provider, region, groupID, ruleID)
+		return m.DeleteRuleFn(ctx, provider, account, region, groupID, ruleID)
 	}
 	return nil
 }
@@ -59,12 +59,12 @@ func newSecurityTestMux(h *httphandler.SecurityHTTPHandler) *http.ServeMux {
 
 func TestDescribeSecurityGroupReturns200(t *testing.T) {
 	mock := &MockSecurityRepository{
-		GetSecurityGroupFn: func(_ context.Context, _, _, _ string) (*security.SecurityGroup, error) {
+		GetSecurityGroupFn: func(_ context.Context, _, _, _, _ string) (*security.SecurityGroup, error) {
 			return &security.SecurityGroup{ID: "sg-001", Name: "web-sg", VPCID: "vpc-001"}, nil
 		},
 	}
 	h := httphandler.NewSecurityHTTPHandler(mock, &MockStorageRepository{})
-	req := httptest.NewRequest(http.MethodGet, "/aws/security-rules/describe?provider=aws&region=us-east-1&groupID=sg-001", nil)
+	req := httptest.NewRequest(http.MethodGet, "/aws/security-rules/describe?provider=aws&account=production&region=us-east-1&groupID=sg-001", nil)
 	w := httptest.NewRecorder()
 	newSecurityTestMux(h).ServeHTTP(w, req)
 
@@ -80,12 +80,12 @@ func TestDescribeSecurityGroupReturns200(t *testing.T) {
 
 func TestDescribeSecurityGroupReturns404(t *testing.T) {
 	mock := &MockSecurityRepository{
-		GetSecurityGroupFn: func(_ context.Context, _, _, _ string) (*security.SecurityGroup, error) {
+		GetSecurityGroupFn: func(_ context.Context, _, _, _, _ string) (*security.SecurityGroup, error) {
 			return nil, errors.New("not found")
 		},
 	}
 	h := httphandler.NewSecurityHTTPHandler(mock, &MockStorageRepository{})
-	req := httptest.NewRequest(http.MethodGet, "/aws/security-rules/describe?provider=aws&region=us-east-1&groupID=sg-999", nil)
+	req := httptest.NewRequest(http.MethodGet, "/aws/security-rules/describe?provider=aws&account=production&region=us-east-1&groupID=sg-999", nil)
 	w := httptest.NewRecorder()
 	newSecurityTestMux(h).ServeHTTP(w, req)
 
@@ -102,7 +102,7 @@ func TestInsertRuleReturns201WithScrapedData(t *testing.T) {
 		Rules: []security.SecurityRule{{Direction: "ingress", Protocol: "tcp", Action: "allow"}},
 	}
 	secMock := &MockSecurityRepository{
-		GetSecurityGroupFn: func(_ context.Context, _, _, _ string) (*security.SecurityGroup, error) {
+		GetSecurityGroupFn: func(_ context.Context, _, _, _, _ string) (*security.SecurityGroup, error) {
 			return scraped, nil
 		},
 	}
@@ -114,7 +114,7 @@ func TestInsertRuleReturns201WithScrapedData(t *testing.T) {
 		},
 	}
 
-	body, _ := json.Marshal(map[string]string{"provider": "aws", "region": "us-east-1", "groupID": "sg-001"})
+	body, _ := json.Marshal(map[string]string{"provider": "aws", "account": "production", "region": "us-east-1", "groupID": "sg-001"})
 	h := httphandler.NewSecurityHTTPHandler(secMock, storeMock)
 	req := httptest.NewRequest(http.MethodPost, "/aws/security-rules/insert", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -140,9 +140,10 @@ func TestInsertRuleReturns201WithScrapedData(t *testing.T) {
 
 func TestInsertRuleReturns400OnMissingFields(t *testing.T) {
 	tests := []map[string]string{
-		{"provider": "aws", "region": "us-east-1"},  // missing groupID
-		{"provider": "aws", "groupID": "sg-001"},    // missing region
-		{"region": "us-east-1", "groupID": "sg-001"}, // missing provider
+		{"provider": "aws", "account": "production", "region": "us-east-1"},  // missing groupID
+		{"provider": "aws", "account": "production", "groupID": "sg-001"},    // missing region
+		{"provider": "aws", "region": "us-east-1", "groupID": "sg-001"},      // missing account
+		{"account": "production", "region": "us-east-1", "groupID": "sg-001"}, // missing provider
 		{},
 	}
 	for _, body := range tests {
@@ -170,11 +171,11 @@ func TestInsertRuleReturns400OnInvalidJSON(t *testing.T) {
 
 func TestInsertRuleReturns500WhenCloudFetchFails(t *testing.T) {
 	secMock := &MockSecurityRepository{
-		GetSecurityGroupFn: func(_ context.Context, _, _, _ string) (*security.SecurityGroup, error) {
+		GetSecurityGroupFn: func(_ context.Context, _, _, _, _ string) (*security.SecurityGroup, error) {
 			return nil, errors.New("cloud error")
 		},
 	}
-	body, _ := json.Marshal(map[string]string{"provider": "aws", "region": "us-east-1", "groupID": "sg-001"})
+	body, _ := json.Marshal(map[string]string{"provider": "aws", "account": "production", "region": "us-east-1", "groupID": "sg-001"})
 	h := httphandler.NewSecurityHTTPHandler(secMock, &MockStorageRepository{})
 	req := httptest.NewRequest(http.MethodPost, "/aws/security-rules/insert", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -187,7 +188,7 @@ func TestInsertRuleReturns500WhenCloudFetchFails(t *testing.T) {
 
 func TestInsertRuleReturns500WhenStorageFails(t *testing.T) {
 	secMock := &MockSecurityRepository{
-		GetSecurityGroupFn: func(_ context.Context, _, _, _ string) (*security.SecurityGroup, error) {
+		GetSecurityGroupFn: func(_ context.Context, _, _, _, _ string) (*security.SecurityGroup, error) {
 			return &security.SecurityGroup{ID: "sg-001", Provider: "aws", VPCID: "vpc-001"}, nil
 		},
 	}
@@ -196,7 +197,7 @@ func TestInsertRuleReturns500WhenStorageFails(t *testing.T) {
 			return errors.New("disk full")
 		},
 	}
-	body, _ := json.Marshal(map[string]string{"provider": "aws", "region": "us-east-1", "groupID": "sg-001"})
+	body, _ := json.Marshal(map[string]string{"provider": "aws", "account": "production", "region": "us-east-1", "groupID": "sg-001"})
 	h := httphandler.NewSecurityHTTPHandler(secMock, storeMock)
 	req := httptest.NewRequest(http.MethodPost, "/aws/security-rules/insert", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -211,10 +212,10 @@ func TestInsertRuleReturns500WhenStorageFails(t *testing.T) {
 
 func TestRemoveRuleReturns204(t *testing.T) {
 	mock := &MockSecurityRepository{
-		DeleteRuleFn: func(_ context.Context, _, _, _, _ string) error { return nil },
+		DeleteRuleFn: func(_ context.Context, _, _, _, _, _ string) error { return nil },
 	}
 	h := httphandler.NewSecurityHTTPHandler(mock, &MockStorageRepository{})
-	req := httptest.NewRequest(http.MethodDelete, "/aws/security-rules/remove?provider=aws&region=us-east-1&groupID=sg-001&ruleID=rule-001", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/aws/security-rules/remove?provider=aws&account=production&region=us-east-1&groupID=sg-001&ruleID=rule-001", nil)
 	w := httptest.NewRecorder()
 	newSecurityTestMux(h).ServeHTTP(w, req)
 
@@ -225,10 +226,10 @@ func TestRemoveRuleReturns204(t *testing.T) {
 
 func TestRemoveRuleReturns404WhenNotFound(t *testing.T) {
 	mock := &MockSecurityRepository{
-		DeleteRuleFn: func(_ context.Context, _, _, _, _ string) error { return errors.New("not found") },
+		DeleteRuleFn: func(_ context.Context, _, _, _, _, _ string) error { return errors.New("not found") },
 	}
 	h := httphandler.NewSecurityHTTPHandler(mock, &MockStorageRepository{})
-	req := httptest.NewRequest(http.MethodDelete, "/aws/security-rules/remove?provider=aws&region=us-east-1&groupID=sg-001&ruleID=rule-999", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/aws/security-rules/remove?provider=aws&account=production&region=us-east-1&groupID=sg-001&ruleID=rule-999", nil)
 	w := httptest.NewRecorder()
 	newSecurityTestMux(h).ServeHTTP(w, req)
 

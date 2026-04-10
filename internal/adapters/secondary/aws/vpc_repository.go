@@ -5,8 +5,6 @@ import (
 	"fmt"
 
 	awslib "github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
@@ -25,52 +23,44 @@ type ec2VPCClient interface {
 }
 
 // AWSVPCRepository is the AWS implementation of CloudVPCRepository.
+// In production it uses an AWSClientRegistry to route calls per account;
+// in tests a single injected client is used instead.
 type AWSVPCRepository struct {
-	client ec2VPCClient
+	registry   *AWSClientRegistry
+	testClient ec2VPCClient // non-nil only in test mode
 }
 
-// NewAWSVPCRepository creates a new AWSVPCRepository using the default AWS credential chain.
-// Returns an error if credentials cannot be retrieved.
-func NewAWSVPCRepository(ctx context.Context) (*AWSVPCRepository, error) {
-	return newAWSVPCRepositoryWithOptions(ctx)
-}
-
-// NewAWSVPCRepositoryWithStaticCredentials creates a repository with explicit credentials.
-// Useful for testing or explicit credential injection.
-func NewAWSVPCRepositoryWithStaticCredentials(ctx context.Context, accessKeyID, secretAccessKey, sessionToken string) (*AWSVPCRepository, error) {
-	if accessKeyID == "" || secretAccessKey == "" {
-		return nil, fmt.Errorf("aws credentials: access key ID and secret access key are required")
-	}
-	return newAWSVPCRepositoryWithOptions(ctx,
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, sessionToken)),
-	)
-}
-
-func newAWSVPCRepositoryWithOptions(ctx context.Context, opts ...func(*config.LoadOptions) error) (*AWSVPCRepository, error) {
-	cfg, err := config.LoadDefaultConfig(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("aws config: %w", err)
-	}
-	// Pre-validate credentials so auth failures surface at startup, not per request.
-	if _, err = cfg.Credentials.Retrieve(ctx); err != nil {
-		return nil, fmt.Errorf("aws credentials: %w", err)
-	}
-	return &AWSVPCRepository{client: ec2.NewFromConfig(cfg)}, nil
+// NewAWSVPCRepositoryFromRegistry creates a production repository backed by the given registry.
+func NewAWSVPCRepositoryFromRegistry(registry *AWSClientRegistry) *AWSVPCRepository {
+	return &AWSVPCRepository{registry: registry}
 }
 
 // newAWSVPCRepositoryWithClient creates a repository with an injected client (for tests).
 func newAWSVPCRepositoryWithClient(client ec2VPCClient) *AWSVPCRepository {
-	return &AWSVPCRepository{client: client}
+	return &AWSVPCRepository{testClient: client}
 }
 
-// regionOpt returns a functional option that sets the EC2 region for a single call.
+// clientFor returns the EC2 client for the given account.
+// In test mode the injected client is always returned.
+func (r *AWSVPCRepository) clientFor(account string) (ec2VPCClient, error) {
+	if r.testClient != nil {
+		return r.testClient, nil
+	}
+	return r.registry.vpcClient(account)
+}
+
+// regionOpt returns a functional option that overrides the EC2 region for a single call.
 func regionOpt(region string) func(*ec2.Options) {
 	return func(o *ec2.Options) { o.Region = region }
 }
 
 // GetVPC retrieves a VPC by ID from AWS.
-func (r *AWSVPCRepository) GetVPC(ctx context.Context, provider, region, vpcID string) (*vpc.VPC, error) {
-	out, err := r.client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
+func (r *AWSVPCRepository) GetVPC(ctx context.Context, provider, account, region, vpcID string) (*vpc.VPC, error) {
+	client, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	out, err := client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
 		VpcIds: []string{vpcID},
 	}, regionOpt(region))
 	if err != nil {
@@ -81,25 +71,25 @@ func (r *AWSVPCRepository) GetVPC(ctx context.Context, provider, region, vpcID s
 	}
 	v := mapAWSVPC(out.Vpcs[0])
 
-	subnets, err := r.ListSubnets(ctx, provider, region, vpcID)
+	subnets, err := r.ListSubnets(ctx, provider, account, region, vpcID)
 	if err != nil {
 		return nil, err
 	}
 	v.Subnets = subnets
 
-	routes, err := r.listRoutes(ctx, region, vpcID)
+	routes, err := r.listRoutes(ctx, client, region, vpcID)
 	if err != nil {
 		return nil, err
 	}
 	v.Routes = routes
 
-	peerings, err := r.ListPeerings(ctx, provider, region, vpcID)
+	peerings, err := r.ListPeerings(ctx, provider, account, region, vpcID)
 	if err != nil {
 		return nil, err
 	}
 	v.Peerings = peerings
 
-	vpns, err := r.ListVPNs(ctx, provider, region, vpcID)
+	vpns, err := r.ListVPNs(ctx, provider, account, region, vpcID)
 	if err != nil {
 		return nil, err
 	}
@@ -109,8 +99,12 @@ func (r *AWSVPCRepository) GetVPC(ctx context.Context, provider, region, vpcID s
 }
 
 // ListVPCs lists all VPCs in a region from AWS.
-func (r *AWSVPCRepository) ListVPCs(ctx context.Context, provider, region string) ([]vpc.VPC, error) {
-	out, err := r.client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{}, regionOpt(region))
+func (r *AWSVPCRepository) ListVPCs(ctx context.Context, provider, account, region string) ([]vpc.VPC, error) {
+	client, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	out, err := client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{}, regionOpt(region))
 	if err != nil {
 		return nil, fmt.Errorf("describe vpcs: %w", err)
 	}
@@ -122,8 +116,12 @@ func (r *AWSVPCRepository) ListVPCs(ctx context.Context, provider, region string
 }
 
 // UpdateRoutes replaces the custom routes in the main route table of a VPC.
-func (r *AWSVPCRepository) UpdateRoutes(ctx context.Context, provider, region, vpcID string, routes []vpc.Route) error {
-	rtOut, err := r.client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
+func (r *AWSVPCRepository) UpdateRoutes(ctx context.Context, provider, account, region, vpcID string, routes []vpc.Route) error {
+	client, err := r.clientFor(account)
+	if err != nil {
+		return err
+	}
+	rtOut, err := client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
 		Filters: []types.Filter{
 			{Name: awslib.String("vpc-id"), Values: []string{vpcID}},
 			{Name: awslib.String("association.main"), Values: []string{"true"}},
@@ -145,7 +143,7 @@ func (r *AWSVPCRepository) UpdateRoutes(ctx context.Context, provider, region, v
 		if rt.DestinationCidrBlock == nil {
 			continue
 		}
-		if _, err = r.client.DeleteRoute(ctx, &ec2.DeleteRouteInput{
+		if _, err = client.DeleteRoute(ctx, &ec2.DeleteRouteInput{
 			RouteTableId:         awslib.String(rtID),
 			DestinationCidrBlock: rt.DestinationCidrBlock,
 		}, regionOpt(region)); err != nil {
@@ -155,7 +153,7 @@ func (r *AWSVPCRepository) UpdateRoutes(ctx context.Context, provider, region, v
 
 	// Create the desired routes.
 	for _, route := range routes {
-		if _, err = r.client.CreateRoute(ctx, &ec2.CreateRouteInput{
+		if _, err = client.CreateRoute(ctx, &ec2.CreateRouteInput{
 			RouteTableId:         awslib.String(rtID),
 			DestinationCidrBlock: awslib.String(route.Destination),
 			GatewayId:            awslib.String(route.NextHop),
@@ -167,8 +165,12 @@ func (r *AWSVPCRepository) UpdateRoutes(ctx context.Context, provider, region, v
 }
 
 // ListSubnets lists all subnets for a VPC in AWS.
-func (r *AWSVPCRepository) ListSubnets(ctx context.Context, provider, region, vpcID string) ([]vpc.Subnet, error) {
-	out, err := r.client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+func (r *AWSVPCRepository) ListSubnets(ctx context.Context, provider, account, region, vpcID string) ([]vpc.Subnet, error) {
+	client, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	out, err := client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
 		Filters: []types.Filter{
 			{Name: awslib.String("vpc-id"), Values: []string{vpcID}},
 		},
@@ -190,8 +192,12 @@ func (r *AWSVPCRepository) ListSubnets(ctx context.Context, provider, region, vp
 }
 
 // ListPeerings lists all VPC peering connections for a VPC in AWS.
-func (r *AWSVPCRepository) ListPeerings(ctx context.Context, provider, region, vpcID string) ([]vpc.Peering, error) {
-	out, err := r.client.DescribeVpcPeeringConnections(ctx, &ec2.DescribeVpcPeeringConnectionsInput{
+func (r *AWSVPCRepository) ListPeerings(ctx context.Context, provider, account, region, vpcID string) ([]vpc.Peering, error) {
+	client, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	out, err := client.DescribeVpcPeeringConnections(ctx, &ec2.DescribeVpcPeeringConnectionsInput{
 		Filters: []types.Filter{
 			{Name: awslib.String("requester-vpc-info.vpc-id"), Values: []string{vpcID}},
 		},
@@ -225,8 +231,12 @@ func (r *AWSVPCRepository) ListPeerings(ctx context.Context, provider, region, v
 }
 
 // ListVPNs lists all VPN connections for a VPC in AWS.
-func (r *AWSVPCRepository) ListVPNs(ctx context.Context, provider, region, vpcID string) ([]vpc.VPN, error) {
-	out, err := r.client.DescribeVpnConnections(ctx, &ec2.DescribeVpnConnectionsInput{
+func (r *AWSVPCRepository) ListVPNs(ctx context.Context, provider, account, region, vpcID string) ([]vpc.VPN, error) {
+	client, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	out, err := client.DescribeVpnConnections(ctx, &ec2.DescribeVpnConnectionsInput{
 		Filters: []types.Filter{
 			{Name: awslib.String("vpc-id"), Values: []string{vpcID}},
 		},
@@ -258,8 +268,8 @@ func (r *AWSVPCRepository) ListVPNs(ctx context.Context, provider, region, vpcID
 }
 
 // listRoutes retrieves routes from the main route table of a VPC.
-func (r *AWSVPCRepository) listRoutes(ctx context.Context, region, vpcID string) ([]vpc.Route, error) {
-	out, err := r.client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
+func (r *AWSVPCRepository) listRoutes(ctx context.Context, client ec2VPCClient, region, vpcID string) ([]vpc.Route, error) {
+	out, err := client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
 		Filters: []types.Filter{
 			{Name: awslib.String("vpc-id"), Values: []string{vpcID}},
 			{Name: awslib.String("association.main"), Values: []string{"true"}},

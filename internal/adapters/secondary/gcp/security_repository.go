@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"google.golang.org/api/compute/v1"
-	"google.golang.org/api/option"
 
 	"gournetwork/internal/domain/security"
 )
@@ -53,47 +52,41 @@ func (w *firewallServiceWrapper) DeleteFirewall(project, firewall string) error 
 }
 
 // GCPSecurityRepository is the GCP implementation of CloudSecurityRepository.
+// In production it uses a GCPClientRegistry to route calls per project alias;
+// in tests a single injected client and project ID are used instead.
 type GCPSecurityRepository struct {
-	client  gcpFirewallClient
-	project string
+	registry    *GCPClientRegistry
+	testClient  gcpFirewallClient // non-nil only in test mode
+	testProject string            // used together with testClient
 }
 
-// NewGCPSecurityRepository creates a new GCPSecurityRepository using Application Default Credentials.
-func NewGCPSecurityRepository(ctx context.Context, project string) (*GCPSecurityRepository, error) {
-	return newGCPSecurityRepositoryWithOptions(ctx, project)
-}
-
-// NewGCPSecurityRepositoryWithCredentialsFile creates a repository authenticated via a service account JSON file.
-func NewGCPSecurityRepositoryWithCredentialsFile(ctx context.Context, project, credentialsFile string) (*GCPSecurityRepository, error) {
-	return newGCPSecurityRepositoryWithOptions(ctx, project, option.WithCredentialsFile(credentialsFile))
-}
-
-// NewGCPSecurityRepositoryWithCredentialsJSON creates a repository authenticated via a service account JSON blob.
-func NewGCPSecurityRepositoryWithCredentialsJSON(ctx context.Context, project string, credentialsJSON []byte) (*GCPSecurityRepository, error) {
-	return newGCPSecurityRepositoryWithOptions(ctx, project, option.WithCredentialsJSON(credentialsJSON))
-}
-
-func newGCPSecurityRepositoryWithOptions(ctx context.Context, project string, opts ...option.ClientOption) (*GCPSecurityRepository, error) {
-	if project == "" {
-		return nil, fmt.Errorf("gcp project ID is required")
-	}
-	opts = append([]option.ClientOption{option.WithScopes(compute.ComputeScope)}, opts...)
-	svc, err := compute.NewService(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("gcp compute service: %w", err)
-	}
-	return &GCPSecurityRepository{client: &firewallServiceWrapper{svc: svc}, project: project}, nil
+// NewGCPSecurityRepositoryFromRegistry creates a production repository backed by the given registry.
+func NewGCPSecurityRepositoryFromRegistry(registry *GCPClientRegistry) *GCPSecurityRepository {
+	return &GCPSecurityRepository{registry: registry}
 }
 
 // newGCPSecurityRepositoryWithClient creates a repository with an injected client (for tests).
 func newGCPSecurityRepositoryWithClient(client gcpFirewallClient, project string) *GCPSecurityRepository {
-	return &GCPSecurityRepository{client: client, project: project}
+	return &GCPSecurityRepository{testClient: client, testProject: project}
+}
+
+// clientFor returns the GCP firewall client and actual project ID for the given alias.
+// In test mode the injected client and project are always returned.
+func (r *GCPSecurityRepository) clientFor(alias string) (gcpFirewallClient, string, error) {
+	if r.testClient != nil {
+		return r.testClient, r.testProject, nil
+	}
+	return r.registry.firewallClient(alias)
 }
 
 // GetSecurityGroup retrieves a GCP firewall rule set by name.
 // In GCP, the groupID corresponds to the firewall rule name.
-func (r *GCPSecurityRepository) GetSecurityGroup(ctx context.Context, provider, region, groupID string) (*security.SecurityGroup, error) {
-	fw, err := r.client.GetFirewall(r.project, groupID)
+func (r *GCPSecurityRepository) GetSecurityGroup(ctx context.Context, provider, account, region, groupID string) (*security.SecurityGroup, error) {
+	client, project, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	fw, err := client.GetFirewall(project, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("get firewall: %w", err)
 	}
@@ -101,8 +94,12 @@ func (r *GCPSecurityRepository) GetSecurityGroup(ctx context.Context, provider, 
 }
 
 // ListSecurityGroups lists all GCP firewall rules for a network (vpcID).
-func (r *GCPSecurityRepository) ListSecurityGroups(ctx context.Context, provider, region, vpcID string) ([]security.SecurityGroup, error) {
-	fws, err := r.client.ListFirewalls(r.project, vpcID)
+func (r *GCPSecurityRepository) ListSecurityGroups(ctx context.Context, provider, account, region, vpcID string) ([]security.SecurityGroup, error) {
+	client, project, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	fws, err := client.ListFirewalls(project, vpcID)
 	if err != nil {
 		return nil, fmt.Errorf("list firewalls: %w", err)
 	}
@@ -114,17 +111,26 @@ func (r *GCPSecurityRepository) ListSecurityGroups(ctx context.Context, provider
 }
 
 // UpdateRule updates (patches) the firewall rule identified by groupID with the new rule definition.
-func (r *GCPSecurityRepository) UpdateRule(ctx context.Context, provider, region, groupID string, rule security.SecurityRule) error {
+func (r *GCPSecurityRepository) UpdateRule(ctx context.Context, provider, account, region, groupID string, rule security.SecurityRule) error {
+	client, project, err := r.clientFor(account)
+	if err != nil {
+		return err
+	}
 	fw := toGCPFirewall(rule)
-	if err := r.client.PatchFirewall(r.project, groupID, fw); err != nil {
+	if err := client.PatchFirewall(project, groupID, fw); err != nil {
 		return fmt.Errorf("patch firewall %q: %w", groupID, err)
 	}
 	return nil
 }
 
-// DeleteRule deletes the firewall rule identified by groupID (ruleID is ignored — GCP firewalls are standalone resources).
-func (r *GCPSecurityRepository) DeleteRule(ctx context.Context, provider, region, groupID, ruleID string) error {
-	if err := r.client.DeleteFirewall(r.project, groupID); err != nil {
+// DeleteRule deletes the firewall rule identified by groupID.
+// ruleID is ignored — GCP firewalls are standalone resources identified by groupID.
+func (r *GCPSecurityRepository) DeleteRule(ctx context.Context, provider, account, region, groupID, ruleID string) error {
+	client, project, err := r.clientFor(account)
+	if err != nil {
+		return err
+	}
+	if err := client.DeleteFirewall(project, groupID); err != nil {
 		return fmt.Errorf("delete firewall %q: %w", groupID, err)
 	}
 	return nil
@@ -188,14 +194,16 @@ func toGCPFirewall(rule security.SecurityRule) *compute.Firewall {
 		SourceRanges: rule.Sources,
 		Priority:     int64(rule.Priority),
 	}
-	allowed := &compute.FirewallAllowed{
-		IPProtocol: rule.Protocol,
-		Ports:      []string{portStr},
-	}
 	if rule.Action == "allow" {
-		fw.Allowed = []*compute.FirewallAllowed{allowed}
+		fw.Allowed = []*compute.FirewallAllowed{{
+			IPProtocol: rule.Protocol,
+			Ports:      []string{portStr},
+		}}
 	} else {
-		fw.Denied = []*compute.FirewallDenied{{IPProtocol: rule.Protocol, Ports: []string{portStr}}}
+		fw.Denied = []*compute.FirewallDenied{{
+			IPProtocol: rule.Protocol,
+			Ports:      []string{portStr},
+		}}
 	}
 	return fw
 }

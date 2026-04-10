@@ -5,8 +5,6 @@ import (
 	"fmt"
 
 	awslib "github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
@@ -23,45 +21,39 @@ type ec2SecurityClient interface {
 }
 
 // AWSSecurityRepository is the AWS implementation of CloudSecurityRepository.
+// In production it uses an AWSClientRegistry to route calls per account;
+// in tests a single injected client is used instead.
 type AWSSecurityRepository struct {
-	client ec2SecurityClient
+	registry   *AWSClientRegistry
+	testClient ec2SecurityClient // non-nil only in test mode
 }
 
-// NewAWSSecurityRepository creates a new AWSSecurityRepository using the default AWS credential chain.
-// Returns an error if credentials cannot be retrieved.
-func NewAWSSecurityRepository(ctx context.Context) (*AWSSecurityRepository, error) {
-	return newAWSSecurityRepositoryWithOptions(ctx)
-}
-
-// NewAWSSecurityRepositoryWithStaticCredentials creates a repository with explicit credentials.
-func NewAWSSecurityRepositoryWithStaticCredentials(ctx context.Context, accessKeyID, secretAccessKey, sessionToken string) (*AWSSecurityRepository, error) {
-	if accessKeyID == "" || secretAccessKey == "" {
-		return nil, fmt.Errorf("aws credentials: access key ID and secret access key are required")
-	}
-	return newAWSSecurityRepositoryWithOptions(ctx,
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, sessionToken)),
-	)
-}
-
-func newAWSSecurityRepositoryWithOptions(ctx context.Context, opts ...func(*config.LoadOptions) error) (*AWSSecurityRepository, error) {
-	cfg, err := config.LoadDefaultConfig(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("aws config: %w", err)
-	}
-	if _, err = cfg.Credentials.Retrieve(ctx); err != nil {
-		return nil, fmt.Errorf("aws credentials: %w", err)
-	}
-	return &AWSSecurityRepository{client: ec2.NewFromConfig(cfg)}, nil
+// NewAWSSecurityRepositoryFromRegistry creates a production repository backed by the given registry.
+func NewAWSSecurityRepositoryFromRegistry(registry *AWSClientRegistry) *AWSSecurityRepository {
+	return &AWSSecurityRepository{registry: registry}
 }
 
 // newAWSSecurityRepositoryWithClient creates a repository with an injected client (for tests).
 func newAWSSecurityRepositoryWithClient(client ec2SecurityClient) *AWSSecurityRepository {
-	return &AWSSecurityRepository{client: client}
+	return &AWSSecurityRepository{testClient: client}
+}
+
+// clientFor returns the EC2 client for the given account.
+// In test mode the injected client is always returned.
+func (r *AWSSecurityRepository) clientFor(account string) (ec2SecurityClient, error) {
+	if r.testClient != nil {
+		return r.testClient, nil
+	}
+	return r.registry.securityClient(account)
 }
 
 // GetSecurityGroup retrieves a security group by ID from AWS.
-func (r *AWSSecurityRepository) GetSecurityGroup(ctx context.Context, provider, region, groupID string) (*security.SecurityGroup, error) {
-	out, err := r.client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
+func (r *AWSSecurityRepository) GetSecurityGroup(ctx context.Context, provider, account, region, groupID string) (*security.SecurityGroup, error) {
+	client, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	out, err := client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
 		GroupIds: []string{groupID},
 	}, regionOpt(region))
 	if err != nil {
@@ -74,8 +66,12 @@ func (r *AWSSecurityRepository) GetSecurityGroup(ctx context.Context, provider, 
 }
 
 // ListSecurityGroups lists all security groups for a VPC in AWS.
-func (r *AWSSecurityRepository) ListSecurityGroups(ctx context.Context, provider, region, vpcID string) ([]security.SecurityGroup, error) {
-	out, err := r.client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
+func (r *AWSSecurityRepository) ListSecurityGroups(ctx context.Context, provider, account, region, vpcID string) ([]security.SecurityGroup, error) {
+	client, err := r.clientFor(account)
+	if err != nil {
+		return nil, err
+	}
+	out, err := client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
 		Filters: []types.Filter{
 			{Name: awslib.String("vpc-id"), Values: []string{vpcID}},
 		},
@@ -91,10 +87,14 @@ func (r *AWSSecurityRepository) ListSecurityGroups(ctx context.Context, provider
 }
 
 // UpdateRule authorizes a new security rule within a group in AWS.
-func (r *AWSSecurityRepository) UpdateRule(ctx context.Context, provider, region, groupID string, rule security.SecurityRule) error {
+func (r *AWSSecurityRepository) UpdateRule(ctx context.Context, provider, account, region, groupID string, rule security.SecurityRule) error {
+	client, err := r.clientFor(account)
+	if err != nil {
+		return err
+	}
 	perm := toIPPermission(rule)
 	if rule.Direction == "ingress" {
-		_, err := r.client.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
+		_, err := client.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
 			GroupId:       awslib.String(groupID),
 			IpPermissions: []types.IpPermission{perm},
 		}, regionOpt(region))
@@ -103,7 +103,7 @@ func (r *AWSSecurityRepository) UpdateRule(ctx context.Context, provider, region
 		}
 		return nil
 	}
-	_, err := r.client.AuthorizeSecurityGroupEgress(ctx, &ec2.AuthorizeSecurityGroupEgressInput{
+	_, err = client.AuthorizeSecurityGroupEgress(ctx, &ec2.AuthorizeSecurityGroupEgressInput{
 		GroupId:       awslib.String(groupID),
 		IpPermissions: []types.IpPermission{perm},
 	}, regionOpt(region))
@@ -114,9 +114,12 @@ func (r *AWSSecurityRepository) UpdateRule(ctx context.Context, provider, region
 }
 
 // DeleteRule removes a security rule from a group in AWS.
-func (r *AWSSecurityRepository) DeleteRule(ctx context.Context, provider, region, groupID, ruleID string) error {
-	// Fetch the group to find the matching rule by ID.
-	sg, err := r.GetSecurityGroup(ctx, provider, region, groupID)
+func (r *AWSSecurityRepository) DeleteRule(ctx context.Context, provider, account, region, groupID, ruleID string) error {
+	sg, err := r.GetSecurityGroup(ctx, provider, account, region, groupID)
+	if err != nil {
+		return err
+	}
+	client, err := r.clientFor(account)
 	if err != nil {
 		return err
 	}
@@ -126,7 +129,7 @@ func (r *AWSSecurityRepository) DeleteRule(ctx context.Context, provider, region
 		}
 		perm := toIPPermission(rule)
 		if rule.Direction == "ingress" {
-			if _, err = r.client.RevokeSecurityGroupIngress(ctx, &ec2.RevokeSecurityGroupIngressInput{
+			if _, err = client.RevokeSecurityGroupIngress(ctx, &ec2.RevokeSecurityGroupIngressInput{
 				GroupId:       awslib.String(groupID),
 				IpPermissions: []types.IpPermission{perm},
 			}, regionOpt(region)); err != nil {
@@ -134,7 +137,7 @@ func (r *AWSSecurityRepository) DeleteRule(ctx context.Context, provider, region
 			}
 			return nil
 		}
-		if _, err = r.client.RevokeSecurityGroupEgress(ctx, &ec2.RevokeSecurityGroupEgressInput{
+		if _, err = client.RevokeSecurityGroupEgress(ctx, &ec2.RevokeSecurityGroupEgressInput{
 			GroupId:       awslib.String(groupID),
 			IpPermissions: []types.IpPermission{perm},
 		}, regionOpt(region)); err != nil {

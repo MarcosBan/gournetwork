@@ -34,28 +34,15 @@ func (m *mockGCPFirewallClient) DeleteFirewall(project, firewall string) error {
 	return m.deleteFirewallErr
 }
 
-// --- auth tests ---
+// Compile-time check: mock implements the interface.
+var _ gcpFirewallClient = (*mockGCPFirewallClient)(nil)
 
-func TestNewGCPSecurityRepository_MissingProject(t *testing.T) {
-	ctx := context.Background()
-	_, err := NewGCPSecurityRepository(ctx, "")
-	if err == nil {
-		t.Fatal("expected error with empty project, got nil")
-	}
-}
-
-func TestNewGCPSecurityRepository_InvalidCredentialsJSON(t *testing.T) {
-	ctx := context.Background()
-	_, err := NewGCPSecurityRepositoryWithCredentialsJSON(ctx, "my-project", []byte(`not-json`))
-	if err == nil {
-		t.Fatal("expected error with invalid credentials JSON, got nil")
-	}
-}
+// --- GetSecurityGroup ---
 
 func TestGCPSecurityRepository_GetSecurityGroup_AuthError(t *testing.T) {
 	authErr := errors.New("googleapi: Error 401: Request had invalid authentication credentials")
 	repo := newGCPSecurityRepositoryWithClient(&mockGCPFirewallClient{getFirewallErr: authErr}, "my-project")
-	_, err := repo.GetSecurityGroup(context.Background(), "gcp", "us-central1", "my-firewall")
+	_, err := repo.GetSecurityGroup(context.Background(), "gcp", "test", "us-central1", "my-firewall")
 	if err == nil {
 		t.Fatal("expected auth error to be propagated, got nil")
 	}
@@ -67,13 +54,11 @@ func TestGCPSecurityRepository_GetSecurityGroup_AuthError(t *testing.T) {
 func TestGCPSecurityRepository_ListSecurityGroups_AuthError(t *testing.T) {
 	authErr := errors.New("googleapi: Error 403: Permission denied")
 	repo := newGCPSecurityRepositoryWithClient(&mockGCPFirewallClient{listFirewallsErr: authErr}, "my-project")
-	_, err := repo.ListSecurityGroups(context.Background(), "gcp", "us-central1", "prod-network")
+	_, err := repo.ListSecurityGroups(context.Background(), "gcp", "test", "us-central1", "prod-network")
 	if err == nil {
 		t.Fatal("expected auth error to be propagated")
 	}
 }
-
-// --- GetSecurityGroup ---
 
 func TestGCPSecurityRepository_GetSecurityGroup(t *testing.T) {
 	mock := &mockGCPFirewallClient{
@@ -89,7 +74,7 @@ func TestGCPSecurityRepository_GetSecurityGroup(t *testing.T) {
 		},
 	}
 	repo := newGCPSecurityRepositoryWithClient(mock, "my-project")
-	sg, err := repo.GetSecurityGroup(context.Background(), "gcp", "us-central1", "allow-http")
+	sg, err := repo.GetSecurityGroup(context.Background(), "gcp", "test", "us-central1", "allow-http")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -129,7 +114,7 @@ func TestGCPSecurityRepository_GetSecurityGroup_DenyRule(t *testing.T) {
 		},
 	}
 	repo := newGCPSecurityRepositoryWithClient(mock, "my-project")
-	sg, err := repo.GetSecurityGroup(context.Background(), "gcp", "us-central1", "deny-all")
+	sg, err := repo.GetSecurityGroup(context.Background(), "gcp", "test", "us-central1", "deny-all")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +136,7 @@ func TestGCPSecurityRepository_ListSecurityGroups(t *testing.T) {
 		},
 	}
 	repo := newGCPSecurityRepositoryWithClient(mock, "my-project")
-	groups, err := repo.ListSecurityGroups(context.Background(), "gcp", "us-central1", "prod-network")
+	groups, err := repo.ListSecurityGroups(context.Background(), "gcp", "test", "us-central1", "prod-network")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -173,7 +158,7 @@ func TestGCPSecurityRepository_UpdateRule(t *testing.T) {
 		Action:    "allow",
 		Priority:  1000,
 	}
-	if err := repo.UpdateRule(context.Background(), "gcp", "us-central1", "allow-https", rule); err != nil {
+	if err := repo.UpdateRule(context.Background(), "gcp", "test", "us-central1", "allow-https", rule); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -182,7 +167,7 @@ func TestGCPSecurityRepository_UpdateRule_AuthError(t *testing.T) {
 	authErr := errors.New("googleapi: Error 403: Permission denied")
 	mock := &mockGCPFirewallClient{patchFirewallErr: authErr}
 	repo := newGCPSecurityRepositoryWithClient(mock, "my-project")
-	err := repo.UpdateRule(context.Background(), "gcp", "us-central1", "allow-https", security.SecurityRule{})
+	err := repo.UpdateRule(context.Background(), "gcp", "test", "us-central1", "allow-https", security.SecurityRule{})
 	if err == nil {
 		t.Fatal("expected auth error to be propagated")
 	}
@@ -196,7 +181,7 @@ func TestGCPSecurityRepository_UpdateRule_AuthError(t *testing.T) {
 func TestGCPSecurityRepository_DeleteRule(t *testing.T) {
 	mock := &mockGCPFirewallClient{}
 	repo := newGCPSecurityRepositoryWithClient(mock, "my-project")
-	if err := repo.DeleteRule(context.Background(), "gcp", "us-central1", "allow-http", "rule-id"); err != nil {
+	if err := repo.DeleteRule(context.Background(), "gcp", "test", "us-central1", "allow-http", "rule-id"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -205,11 +190,19 @@ func TestGCPSecurityRepository_DeleteRule_AuthError(t *testing.T) {
 	authErr := errors.New("googleapi: Error 403: Permission denied")
 	mock := &mockGCPFirewallClient{deleteFirewallErr: authErr}
 	repo := newGCPSecurityRepositoryWithClient(mock, "my-project")
-	err := repo.DeleteRule(context.Background(), "gcp", "us-central1", "allow-http", "rule-id")
+	err := repo.DeleteRule(context.Background(), "gcp", "test", "us-central1", "allow-http", "rule-id")
 	if err == nil {
 		t.Fatal("expected auth error to be propagated")
 	}
 }
 
-// Compile-time check: mock implements the interface.
-var _ gcpFirewallClient = (*mockGCPFirewallClient)(nil)
+// --- registry project lookup ---
+
+func TestGCPSecurityRepository_UnknownProject(t *testing.T) {
+	registry := &GCPClientRegistry{entries: map[string]*gcpClientEntry{}}
+	repo := NewGCPSecurityRepositoryFromRegistry(registry)
+	_, err := repo.GetSecurityGroup(context.Background(), "gcp", "nonexistent", "us-central1", "sg-1")
+	if err == nil {
+		t.Fatal("expected error for unknown project alias, got nil")
+	}
+}

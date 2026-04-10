@@ -49,55 +49,15 @@ func (m *mockGCPVPCClient) ListVpnTunnels(project, region string) ([]*compute.Vp
 	return m.listVpnTunnelsOut, m.listVpnTunnelsErr
 }
 
-// --- auth tests ---
+// Compile-time check: mock implements the interface.
+var _ gcpVPCClient = (*mockGCPVPCClient)(nil)
 
-// TestNewGCPVPCRepository_MissingProject verifies that an empty project returns an error.
-func TestNewGCPVPCRepository_MissingProject(t *testing.T) {
-	ctx := context.Background()
-	_, err := NewGCPVPCRepository(ctx, "")
-	if err == nil {
-		t.Fatal("expected error with empty project, got nil")
-	}
-}
+// --- GetVPC ---
 
-// TestNewGCPVPCRepository_InvalidCredentialsJSON verifies that invalid credential JSON returns an error.
-func TestNewGCPVPCRepository_InvalidCredentialsJSON(t *testing.T) {
-	ctx := context.Background()
-	_, err := NewGCPVPCRepositoryWithCredentialsJSON(ctx, "my-project", []byte(`{"type":"invalid"}`))
-	if err == nil {
-		t.Fatal("expected error with invalid credentials JSON, got nil")
-	}
-}
-
-// TestNewGCPVPCRepository_ValidCredentialsJSON verifies that a valid service account JSON is accepted.
-func TestNewGCPVPCRepository_ValidCredentialsJSON(t *testing.T) {
-	ctx := context.Background()
-	// Minimal valid service account JSON (won't authenticate to real GCP but passes SDK validation).
-	saJSON := []byte(`{
-		"type": "service_account",
-		"project_id": "my-project",
-		"private_key_id": "key-id",
-		"private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA2a2rwplBQLF29amygykEMmYz0+Kcj3bKBp29LNlTXo4qd/4h\nTKEA==\n-----END RSA PRIVATE KEY-----\n",
-		"client_email": "test@my-project.iam.gserviceaccount.com",
-		"client_id": "123456789",
-		"auth_uri": "https://accounts.google.com/o/oauth2/auth",
-		"token_uri": "https://oauth2.googleapis.com/token"
-	}`)
-	// The SDK accepts the JSON structure at construction time even if the key is fake.
-	// Real auth errors surface on the first API call (token fetch).
-	_, err := NewGCPVPCRepositoryWithCredentialsJSON(ctx, "my-project", saJSON)
-	// We allow either success (SDK accepted the JSON) or a parse error on the fake key.
-	// Either way the project-empty check and type validation were passed.
-	if err != nil {
-		t.Logf("note: NewGCPVPCRepositoryWithCredentialsJSON returned error (expected with fake key): %v", err)
-	}
-}
-
-// TestGCPVPCRepository_GetVPC_AuthError verifies that auth errors from the SDK are propagated.
 func TestGCPVPCRepository_GetVPC_AuthError(t *testing.T) {
 	authErr := errors.New("googleapi: Error 401: Request had invalid authentication credentials")
 	repo := newGCPVPCRepositoryWithClient(&mockGCPVPCClient{getNetworkErr: authErr}, "my-project")
-	_, err := repo.GetVPC(context.Background(), "gcp", "us-central1", "my-network")
+	_, err := repo.GetVPC(context.Background(), "gcp", "test", "us-central1", "my-network")
 	if err == nil {
 		t.Fatal("expected auth error to be propagated, got nil")
 	}
@@ -105,8 +65,6 @@ func TestGCPVPCRepository_GetVPC_AuthError(t *testing.T) {
 		t.Fatalf("expected original auth error in chain, got: %v", err)
 	}
 }
-
-// --- GetVPC ---
 
 func TestGCPVPCRepository_GetVPC(t *testing.T) {
 	mock := &mockGCPVPCClient{
@@ -124,7 +82,7 @@ func TestGCPVPCRepository_GetVPC(t *testing.T) {
 		listVpnTunnelsOut: []*compute.VpnTunnel{},
 	}
 	repo := newGCPVPCRepositoryWithClient(mock, "my-project")
-	got, err := repo.GetVPC(context.Background(), "gcp", "us-central1", "prod-network")
+	got, err := repo.GetVPC(context.Background(), "gcp", "test", "us-central1", "prod-network")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -145,7 +103,7 @@ func TestGCPVPCRepository_GetVPC(t *testing.T) {
 func TestGCPVPCRepository_GetVPC_AuthError_Network(t *testing.T) {
 	authErr := errors.New("googleapi: Error 403: Required 'compute.networks.get' permission")
 	repo := newGCPVPCRepositoryWithClient(&mockGCPVPCClient{getNetworkErr: authErr}, "my-project")
-	_, err := repo.GetVPC(context.Background(), "gcp", "us-central1", "prod-network")
+	_, err := repo.GetVPC(context.Background(), "gcp", "test", "us-central1", "prod-network")
 	if err == nil {
 		t.Fatal("expected permission error to be propagated, got nil")
 	}
@@ -161,7 +119,7 @@ func TestGCPVPCRepository_ListVPCs(t *testing.T) {
 		},
 	}
 	repo := newGCPVPCRepositoryWithClient(mock, "my-project")
-	vpcs, err := repo.ListVPCs(context.Background(), "gcp", "us-central1")
+	vpcs, err := repo.ListVPCs(context.Background(), "gcp", "test", "us-central1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -173,7 +131,7 @@ func TestGCPVPCRepository_ListVPCs(t *testing.T) {
 func TestGCPVPCRepository_ListVPCs_AuthError(t *testing.T) {
 	authErr := errors.New("googleapi: Error 401: Invalid Credentials")
 	repo := newGCPVPCRepositoryWithClient(&mockGCPVPCClient{listNetworksErr: authErr}, "my-project")
-	_, err := repo.ListVPCs(context.Background(), "gcp", "us-central1")
+	_, err := repo.ListVPCs(context.Background(), "gcp", "test", "us-central1")
 	if err == nil {
 		t.Fatal("expected auth error to be propagated")
 	}
@@ -193,7 +151,7 @@ func TestGCPVPCRepository_ListSubnets(t *testing.T) {
 		},
 	}
 	repo := newGCPVPCRepositoryWithClient(mock, "my-project")
-	subs, err := repo.ListSubnets(context.Background(), "gcp", "us-central1", "prod-network")
+	subs, err := repo.ListSubnets(context.Background(), "gcp", "test", "us-central1", "prod-network")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -224,7 +182,7 @@ func TestGCPVPCRepository_ListPeerings(t *testing.T) {
 		},
 	}
 	repo := newGCPVPCRepositoryWithClient(mock, "my-project")
-	peerings, err := repo.ListPeerings(context.Background(), "gcp", "us-central1", "prod-network")
+	peerings, err := repo.ListPeerings(context.Background(), "gcp", "test", "us-central1", "prod-network")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -253,7 +211,7 @@ func TestGCPVPCRepository_ListVPNs(t *testing.T) {
 		},
 	}
 	repo := newGCPVPCRepositoryWithClient(mock, "my-project")
-	vpns, err := repo.ListVPNs(context.Background(), "gcp", "us-central1", "prod-network")
+	vpns, err := repo.ListVPNs(context.Background(), "gcp", "test", "us-central1", "prod-network")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -285,7 +243,7 @@ func TestGCPVPCRepository_UpdateRoutes(t *testing.T) {
 	routes := []vpc.Route{
 		{Destination: "10.3.0.0/16", NextHop: "https://...default-internet-gateway"},
 	}
-	if err := repo.UpdateRoutes(context.Background(), "gcp", "us-central1", "prod-network", routes); err != nil {
+	if err := repo.UpdateRoutes(context.Background(), "gcp", "test", "us-central1", "prod-network", routes); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -293,7 +251,7 @@ func TestGCPVPCRepository_UpdateRoutes(t *testing.T) {
 func TestGCPVPCRepository_UpdateRoutes_AuthError(t *testing.T) {
 	authErr := errors.New("googleapi: Error 403: Permission denied")
 	repo := newGCPVPCRepositoryWithClient(&mockGCPVPCClient{getNetworkErr: authErr}, "my-project")
-	err := repo.UpdateRoutes(context.Background(), "gcp", "us-central1", "prod-network", nil)
+	err := repo.UpdateRoutes(context.Background(), "gcp", "test", "us-central1", "prod-network", nil)
 	if err == nil {
 		t.Fatal("expected auth error to be propagated")
 	}
@@ -302,5 +260,13 @@ func TestGCPVPCRepository_UpdateRoutes_AuthError(t *testing.T) {
 	}
 }
 
-// Compile-time check: mock implements the interface.
-var _ gcpVPCClient = (*mockGCPVPCClient)(nil)
+// --- registry account lookup ---
+
+func TestGCPVPCRepository_UnknownProject(t *testing.T) {
+	registry := &GCPClientRegistry{entries: map[string]*gcpClientEntry{}}
+	repo := NewGCPVPCRepositoryFromRegistry(registry)
+	_, err := repo.GetVPC(context.Background(), "gcp", "nonexistent", "us-central1", "my-network")
+	if err == nil {
+		t.Fatal("expected error for unknown project alias, got nil")
+	}
+}

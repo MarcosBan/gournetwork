@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	awslib "github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
@@ -16,12 +15,12 @@ import (
 // --- mock ---
 
 type mockEC2SecurityClient struct {
-	describeSecurityGroupsOut    *ec2.DescribeSecurityGroupsOutput
-	describeSecurityGroupsErr    error
-	authorizeIngressErr          error
-	authorizeEgressErr           error
-	revokeIngressErr             error
-	revokeEgressErr              error
+	describeSecurityGroupsOut *ec2.DescribeSecurityGroupsOutput
+	describeSecurityGroupsErr error
+	authorizeIngressErr       error
+	authorizeEgressErr        error
+	revokeIngressErr          error
+	revokeEgressErr           error
 }
 
 func (m *mockEC2SecurityClient) DescribeSecurityGroups(ctx context.Context, params *ec2.DescribeSecurityGroupsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
@@ -40,43 +39,17 @@ func (m *mockEC2SecurityClient) RevokeSecurityGroupEgress(ctx context.Context, p
 	return nil, m.revokeEgressErr
 }
 
-// --- auth tests ---
+// Compile-time check: mock implements the interface.
+var _ ec2SecurityClient = (*mockEC2SecurityClient)(nil)
 
-func TestNewAWSSecurityRepository_MissingCredentials(t *testing.T) {
-	ctx := context.Background()
-	_, err := newAWSSecurityRepositoryWithOptions(ctx,
-		config.WithCredentialsProvider(aws_errorCredentials{}),
-	)
-	if err == nil {
-		t.Fatal("expected error when no credentials available, got nil")
-	}
-}
-
-func TestNewAWSSecurityRepository_StaticCredentials(t *testing.T) {
-	ctx := context.Background()
-	repo, err := NewAWSSecurityRepositoryWithStaticCredentials(ctx, "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "")
-	if err != nil {
-		t.Fatalf("expected no error with static credentials, got: %v", err)
-	}
-	if repo == nil {
-		t.Fatal("expected non-nil repository")
-	}
-}
-
-func TestNewAWSSecurityRepository_EmptyCredentials(t *testing.T) {
-	ctx := context.Background()
-	_, err := NewAWSSecurityRepositoryWithStaticCredentials(ctx, "", "", "")
-	if err == nil {
-		t.Fatal("expected error with empty credentials, got nil")
-	}
-}
+// --- GetSecurityGroup ---
 
 func TestAWSSecurityRepository_GetSecurityGroup_AuthError(t *testing.T) {
 	authErr := errors.New("AuthFailure: AWS was not able to validate the provided access credentials")
 	repo := newAWSSecurityRepositoryWithClient(&mockEC2SecurityClient{
 		describeSecurityGroupsErr: authErr,
 	})
-	_, err := repo.GetSecurityGroup(context.Background(), "aws", "us-east-1", "sg-123")
+	_, err := repo.GetSecurityGroup(context.Background(), "aws", "test", "us-east-1", "sg-123")
 	if err == nil {
 		t.Fatal("expected auth error to be propagated, got nil")
 	}
@@ -84,8 +57,6 @@ func TestAWSSecurityRepository_GetSecurityGroup_AuthError(t *testing.T) {
 		t.Fatalf("expected original auth error in chain, got: %v", err)
 	}
 }
-
-// --- GetSecurityGroup ---
 
 func TestAWSSecurityRepository_GetSecurityGroup(t *testing.T) {
 	fromPort := int32(80)
@@ -110,7 +81,7 @@ func TestAWSSecurityRepository_GetSecurityGroup(t *testing.T) {
 		},
 	}
 	repo := newAWSSecurityRepositoryWithClient(mock)
-	sg, err := repo.GetSecurityGroup(context.Background(), "aws", "us-east-1", "sg-abc123")
+	sg, err := repo.GetSecurityGroup(context.Background(), "aws", "test", "us-east-1", "sg-abc123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +107,7 @@ func TestAWSSecurityRepository_GetSecurityGroup_NotFound(t *testing.T) {
 		describeSecurityGroupsOut: &ec2.DescribeSecurityGroupsOutput{},
 	}
 	repo := newAWSSecurityRepositoryWithClient(mock)
-	_, err := repo.GetSecurityGroup(context.Background(), "aws", "us-east-1", "sg-missing")
+	_, err := repo.GetSecurityGroup(context.Background(), "aws", "test", "us-east-1", "sg-missing")
 	if err == nil {
 		t.Fatal("expected not-found error, got nil")
 	}
@@ -154,7 +125,7 @@ func TestAWSSecurityRepository_ListSecurityGroups(t *testing.T) {
 		},
 	}
 	repo := newAWSSecurityRepositoryWithClient(mock)
-	groups, err := repo.ListSecurityGroups(context.Background(), "aws", "us-east-1", "vpc-abc")
+	groups, err := repo.ListSecurityGroups(context.Background(), "aws", "test", "us-east-1", "vpc-abc")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,7 +137,7 @@ func TestAWSSecurityRepository_ListSecurityGroups(t *testing.T) {
 func TestAWSSecurityRepository_ListSecurityGroups_AuthError(t *testing.T) {
 	authErr := errors.New("UnauthorizedOperation")
 	repo := newAWSSecurityRepositoryWithClient(&mockEC2SecurityClient{describeSecurityGroupsErr: authErr})
-	_, err := repo.ListSecurityGroups(context.Background(), "aws", "us-east-1", "vpc-abc")
+	_, err := repo.ListSecurityGroups(context.Background(), "aws", "test", "us-east-1", "vpc-abc")
 	if err == nil {
 		t.Fatal("expected auth error to be propagated")
 	}
@@ -184,7 +155,7 @@ func TestAWSSecurityRepository_UpdateRule_Ingress(t *testing.T) {
 		Sources:   []string{"10.0.0.0/8"},
 		Action:    "allow",
 	}
-	if err := repo.UpdateRule(context.Background(), "aws", "us-east-1", "sg-abc", rule); err != nil {
+	if err := repo.UpdateRule(context.Background(), "aws", "test", "us-east-1", "sg-abc", rule); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -199,7 +170,7 @@ func TestAWSSecurityRepository_UpdateRule_Egress(t *testing.T) {
 		Sources:   []string{"0.0.0.0/0"},
 		Action:    "allow",
 	}
-	if err := repo.UpdateRule(context.Background(), "aws", "us-east-1", "sg-abc", rule); err != nil {
+	if err := repo.UpdateRule(context.Background(), "aws", "test", "us-east-1", "sg-abc", rule); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -209,7 +180,7 @@ func TestAWSSecurityRepository_UpdateRule_AuthError(t *testing.T) {
 	mock := &mockEC2SecurityClient{authorizeIngressErr: authErr}
 	repo := newAWSSecurityRepositoryWithClient(mock)
 	rule := security.SecurityRule{Direction: "ingress", Protocol: "tcp"}
-	err := repo.UpdateRule(context.Background(), "aws", "us-east-1", "sg-abc", rule)
+	err := repo.UpdateRule(context.Background(), "aws", "test", "us-east-1", "sg-abc", rule)
 	if err == nil {
 		t.Fatal("expected auth error to be propagated")
 	}
@@ -229,7 +200,7 @@ func TestAWSSecurityRepository_DeleteRule_NotFound(t *testing.T) {
 		},
 	}
 	repo := newAWSSecurityRepositoryWithClient(mock)
-	err := repo.DeleteRule(context.Background(), "aws", "us-east-1", "sg-abc", "rule-missing")
+	err := repo.DeleteRule(context.Background(), "aws", "test", "us-east-1", "sg-abc", "rule-missing")
 	if err == nil {
 		t.Fatal("expected not-found error for missing rule")
 	}
@@ -238,14 +209,19 @@ func TestAWSSecurityRepository_DeleteRule_NotFound(t *testing.T) {
 func TestAWSSecurityRepository_DeleteRule_AuthError(t *testing.T) {
 	authErr := errors.New("AuthFailure")
 	repo := newAWSSecurityRepositoryWithClient(&mockEC2SecurityClient{describeSecurityGroupsErr: authErr})
-	err := repo.DeleteRule(context.Background(), "aws", "us-east-1", "sg-abc", "rule-1")
+	err := repo.DeleteRule(context.Background(), "aws", "test", "us-east-1", "sg-abc", "rule-1")
 	if err == nil {
 		t.Fatal("expected auth error to be propagated")
 	}
 }
 
-// Compile-time check: mock implements the interface.
-var _ ec2SecurityClient = (*mockEC2SecurityClient)(nil)
+// --- registry account lookup ---
 
-// Suppress unused import.
-var _ = config.LoadDefaultConfig
+func TestAWSSecurityRepository_UnknownAccount(t *testing.T) {
+	registry := &AWSClientRegistry{clients: map[string]*ec2.Client{}}
+	repo := NewAWSSecurityRepositoryFromRegistry(registry)
+	_, err := repo.GetSecurityGroup(context.Background(), "aws", "nonexistent", "us-east-1", "sg-123")
+	if err == nil {
+		t.Fatal("expected error for unknown account, got nil")
+	}
+}

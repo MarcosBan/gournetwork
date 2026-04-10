@@ -21,6 +21,9 @@ func NewAnalyseHTTPHandler(vpcRepo secondary.CloudVPCRepository, secRepo seconda
 
 // analyseRequest is the expected request body for the connectivity analysis endpoint.
 type analyseRequest struct {
+	Provider        string `json:"provider"`
+	Account         string `json:"account"`
+	Region          string `json:"region"`
 	SourceVPC       string `json:"source_vpc"`
 	DestinationCIDR string `json:"destination_cidr"`
 }
@@ -39,7 +42,7 @@ func (h *AnalyseHTTPHandler) AnalyseConnectivity(w http.ResponseWriter, r *http.
 	}
 
 	// Stub: attempt to retrieve the source VPC to validate it exists.
-	sourceVPC, err := h.vpcRepo.GetVPC(r.Context(), "", "", req.SourceVPC)
+	sourceVPC, err := h.vpcRepo.GetVPC(r.Context(), req.Provider, req.Account, req.Region, req.SourceVPC)
 	if err != nil || sourceVPC == nil {
 		result := network.ConnectivityResult{
 			Source:      req.SourceVPC,

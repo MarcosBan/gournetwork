@@ -4,44 +4,61 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"os"
 
 	httphandler "gournetwork/internal/adapters/primary/http"
 	awsadapter "gournetwork/internal/adapters/secondary/aws"
 	gcpadapter "gournetwork/internal/adapters/secondary/gcp"
 	"gournetwork/internal/adapters/secondary/storage"
+	"gournetwork/internal/config"
 )
 
 func main() {
 	ctx := context.Background()
 
+	// --- Configuration ---
+	// Load global settings and per-provider credential sets from environment
+	// variables and optional config files (aws.config, gcp.config).
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("configuration error: %v", err)
+	}
+
+	// Validate that at least one cloud provider is configured before binding
+	// any cloud-SDK clients, so the error is surfaced immediately at startup.
+	if err = cfg.Validate(ctx); err != nil {
+		log.Fatalf("credential configuration error: %v\n\n"+
+			"AWS accounts  — set AWS_{NAME}_ACCESS_KEY_ID + AWS_{NAME}_SECRET_ACCESS_KEY,\n"+
+			"              or AWS_{NAME}_CREDENTIALS=key:secret[:token],\n"+
+			"              or list them in aws.config (INI format).\n\n"+
+			"GCP projects  — set GCP_{NAME}_PROJECT_ID + GCP_{NAME}_CREDENTIALS_FILE,\n"+
+			"              or list them in gcp.config (INI format).\n"+
+			"              Use GCP_PROJECT_ID for a single default project (uses ADC if no\n"+
+			"              credentials file is set).", err)
+	}
+
+	log.Printf("Loaded %d AWS account(s) and %d GCP project(s)",
+		len(cfg.AWS.Accounts), len(cfg.GCP.Projects))
+
 	// --- Storage ---
-	// JSON files are persisted under infra/databases/text/{provider}/{resource-type}/...
 	store := storage.NewJSONFileRepository("infra/databases/text")
 
-	// --- AWS ---
-	awsVPCRepo, err := awsadapter.NewAWSVPCRepository(ctx)
+	// --- AWS credential registry ---
+	// One EC2 client per account; credentials validated here at startup.
+	awsRegistry, err := awsadapter.NewAWSClientRegistry(ctx, cfg.AWS)
 	if err != nil {
-		log.Fatalf("AWS VPC repository init failed: %v", err)
+		log.Fatalf("AWS credential validation failed: %v", err)
 	}
-	awsSecRepo, err := awsadapter.NewAWSSecurityRepository(ctx)
-	if err != nil {
-		log.Fatalf("AWS security repository init failed: %v", err)
-	}
+	awsVPCRepo := awsadapter.NewAWSVPCRepositoryFromRegistry(awsRegistry)
+	awsSecRepo := awsadapter.NewAWSSecurityRepositoryFromRegistry(awsRegistry)
 
-	// --- GCP ---
-	gcpProject := os.Getenv("GCP_PROJECT_ID")
-	if gcpProject == "" {
-		log.Fatal("GCP_PROJECT_ID environment variable is required")
-	}
-	gcpVPCRepo, err := gcpadapter.NewGCPVPCRepository(ctx, gcpProject)
+	// --- GCP credential registry ---
+	// One compute.Service per project; credentials validated here at startup.
+	gcpRegistry, err := gcpadapter.NewGCPClientRegistry(ctx, cfg.GCP)
 	if err != nil {
-		log.Fatalf("GCP VPC repository init failed: %v", err)
+		log.Fatalf("GCP credential validation failed: %v", err)
 	}
-	gcpSecRepo, err := gcpadapter.NewGCPSecurityRepository(ctx, gcpProject)
-	if err != nil {
-		log.Fatalf("GCP security repository init failed: %v", err)
-	}
+	gcpVPCRepo := gcpadapter.NewGCPVPCRepositoryFromRegistry(gcpRegistry)
+	gcpSecRepo := gcpadapter.NewGCPSecurityRepositoryFromRegistry(gcpRegistry)
 
 	// --- Handlers ---
 	awsVPCHandler := httphandler.NewVPCHTTPHandler(awsVPCRepo, store)
@@ -55,19 +72,18 @@ func main() {
 	mux := http.NewServeMux()
 
 	// VPC routes — AWS
-	// GET  /aws/vpc/describe/{vpcID}  — describe VPC (vpcID in path, provider/region in query)
-	// POST /aws/vpc/insert            — scrape basic IDs from cloud and store JSON
+	// GET  /aws/vpc/describe/{vpcID}?provider=aws&account=<alias>&region=<r>
+	// POST /aws/vpc/insert            body: {provider, account, region, vpcID}
 	mux.HandleFunc("GET /aws/vpc/describe/{vpcID}", awsVPCHandler.DescribeVPC)
 	mux.HandleFunc("POST /aws/vpc/insert", awsVPCHandler.InsertVPC)
 
 	// VPC routes — GCP
+	// GET  /gcp/vpc/describe/{vpcID}?provider=gcp&account=<project-alias>&region=<r>
+	// POST /gcp/vpc/insert            body: {provider, account, region, vpcID}
 	mux.HandleFunc("GET /gcp/vpc/describe/{vpcID}", gcpVPCHandler.DescribeVPC)
 	mux.HandleFunc("POST /gcp/vpc/insert", gcpVPCHandler.InsertVPC)
 
 	// Security rules — AWS
-	// GET    /aws/security-rules/describe  — describe by groupID query param
-	// POST   /aws/security-rules/insert    — scrape security group and store JSON
-	// DELETE /aws/security-rules/remove    — remove rule by groupID+ruleID query params
 	mux.HandleFunc("GET /aws/security-rules/describe", awsSecHandler.DescribeSecurityGroup)
 	mux.HandleFunc("POST /aws/security-rules/insert", awsSecHandler.InsertRule)
 	mux.HandleFunc("DELETE /aws/security-rules/remove", awsSecHandler.RemoveRule)
@@ -83,8 +99,8 @@ func main() {
 	// Network map overview
 	mux.HandleFunc("GET /map", mapHandler.GetNetworkMap)
 
-	log.Println("Starting gournetwork API server on :8080")
-	if err = http.ListenAndServe(":8080", mux); err != nil {
+	log.Printf("Starting gournetwork API server on %s", cfg.Global.Port)
+	if err = http.ListenAndServe(cfg.Global.Port, mux); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}
 }
