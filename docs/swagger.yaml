@@ -1,0 +1,501 @@
+basePath: /
+definitions:
+  http.analyseRequest:
+    properties:
+      dest_account:
+        type: string
+      dest_provider:
+        type: string
+      dest_region:
+        type: string
+      destination_cidr:
+        type: string
+      source_account:
+        type: string
+      source_provider:
+        type: string
+      source_region:
+        type: string
+      source_vpc:
+        type: string
+    type: object
+  http.insertSecurityGroupRequest:
+    properties:
+      account:
+        type: string
+      groupID:
+        type: string
+      provider:
+        type: string
+      region:
+        type: string
+    type: object
+  http.insertVPCRequest:
+    properties:
+      account:
+        type: string
+      provider:
+        type: string
+      region:
+        type: string
+      vpcID:
+        type: string
+    type: object
+  network.Connection:
+    properties:
+      destination_vpc:
+        type: string
+      details:
+        additionalProperties:
+          type: string
+        type: object
+      source_vpc:
+        type: string
+      type:
+        description: '"peering", "vpn", or "route"'
+        type: string
+    type: object
+  network.ConnectivityResult:
+    properties:
+      connected:
+        type: boolean
+      destination:
+        type: string
+      path:
+        items:
+          type: string
+        type: array
+      reason:
+        type: string
+      source:
+        type: string
+    type: object
+  network.NetworkMap:
+    properties:
+      connections:
+        items:
+          $ref: '#/definitions/network.Connection'
+        type: array
+      generated_at:
+        type: string
+      vpcs:
+        items:
+          $ref: '#/definitions/vpc.VPC'
+        type: array
+    type: object
+  security.PortRange:
+    properties:
+      from:
+        type: integer
+      to:
+        type: integer
+    type: object
+  security.SecurityGroup:
+    properties:
+      id:
+        type: string
+      name:
+        type: string
+      provider:
+        type: string
+      rules:
+        items:
+          $ref: '#/definitions/security.SecurityRule'
+        type: array
+      vpcid:
+        type: string
+    type: object
+  security.SecurityRule:
+    properties:
+      action:
+        description: '"allow" or "deny"'
+        type: string
+      description:
+        type: string
+      destinations:
+        items:
+          type: string
+        type: array
+      direction:
+        description: '"ingress" or "egress"'
+        type: string
+      id:
+        type: string
+      portRange:
+        $ref: '#/definitions/security.PortRange'
+      priority:
+        type: integer
+      protocol:
+        type: string
+      sources:
+        items:
+          type: string
+        type: array
+    type: object
+  vpc.Peering:
+    properties:
+      id:
+        type: string
+      localVPC:
+        type: string
+      name:
+        type: string
+      peerVPC:
+        type: string
+      provider:
+        $ref: '#/definitions/vpc.Provider'
+      state:
+        type: string
+    type: object
+  vpc.Provider:
+    enum:
+    - aws
+    - gcp
+    type: string
+    x-enum-varnames:
+    - ProviderAWS
+    - ProviderGCP
+  vpc.Route:
+    properties:
+      description:
+        type: string
+      destination:
+        type: string
+      nextHop:
+        type: string
+      priority:
+        type: integer
+    type: object
+  vpc.Subnet:
+    properties:
+      cidrblock:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      provider:
+        $ref: '#/definitions/vpc.Provider'
+      zone:
+        type: string
+    type: object
+  vpc.VPC:
+    properties:
+      cidrblock:
+        type: string
+      id:
+        type: string
+      name:
+        type: string
+      peerings:
+        items:
+          $ref: '#/definitions/vpc.Peering'
+        type: array
+      provider:
+        $ref: '#/definitions/vpc.Provider'
+      region:
+        type: string
+      routes:
+        items:
+          $ref: '#/definitions/vpc.Route'
+        type: array
+      subnets:
+        items:
+          $ref: '#/definitions/vpc.Subnet'
+        type: array
+      vpns:
+        items:
+          $ref: '#/definitions/vpc.VPN'
+        type: array
+    type: object
+  vpc.VPN:
+    properties:
+      id:
+        type: string
+      localVPC:
+        type: string
+      name:
+        type: string
+      provider:
+        $ref: '#/definitions/vpc.Provider'
+      remoteGateway:
+        type: string
+      state:
+        type: string
+      tunnels:
+        items:
+          $ref: '#/definitions/vpc.VPNTunnel'
+        type: array
+    type: object
+  vpc.VPNTunnel:
+    properties:
+      id:
+        type: string
+      localIP:
+        type: string
+      remoteIP:
+        type: string
+      state:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: 'API tool to integrate with AWS/GCP and manage network core resources:
+    VPCs, Security Groups, Firewall Rules and multi-cloud connectivity analysis.'
+  title: gournetwork API
+  version: "1.0"
+paths:
+  /analyse:
+    post:
+      consumes:
+      - application/json
+      description: Checks whether a source VPC has a reachable path to the given destination
+        CIDR, evaluating routes and security rules across providers.
+      parameters:
+      - description: Connectivity query
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.analyseRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/network.ConnectivityResult'
+        "400":
+          description: invalid request body
+          schema:
+            type: string
+        "500":
+          description: analysis failed
+          schema:
+            type: string
+      summary: Analyse multi-cloud connectivity
+      tags:
+      - Analyse
+  /map:
+    get:
+      description: Returns an overview of all VPCs and their connections (peerings,
+        VPNs) as a graph structure.
+      parameters:
+      - description: Comma-separated list of providers (e.g. aws,gcp)
+        in: query
+        name: providers
+        type: string
+      - description: Credential alias
+        in: query
+        name: account
+        type: string
+      - description: Region
+        in: query
+        name: region
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/network.NetworkMap'
+        "500":
+          description: failed to build network map
+          schema:
+            type: string
+      summary: Get network map
+      tags:
+      - Map
+  /security-rules/describe:
+    get:
+      description: Returns all rules for the specified security group / firewall rule
+        set.
+      parameters:
+      - description: Cloud provider (aws or gcp)
+        enum:
+        - aws
+        - gcp
+        in: query
+        name: provider
+        required: true
+        type: string
+      - description: Credential alias
+        in: query
+        name: account
+        required: true
+        type: string
+      - description: Region
+        in: query
+        name: region
+        required: true
+        type: string
+      - description: Security group / firewall ID
+        in: query
+        name: groupID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/security.SecurityGroup'
+        "404":
+          description: security group not found
+          schema:
+            type: string
+      summary: Describe a security group
+      tags:
+      - Security Rules
+  /security-rules/insert:
+    post:
+      consumes:
+      - application/json
+      description: Scrapes the full security group from the cloud provider, persists
+        it locally and returns the result.
+      parameters:
+      - description: Security group identifiers
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.insertSecurityGroupRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/security.SecurityGroup'
+        "400":
+          description: invalid request body
+          schema:
+            type: string
+        "500":
+          description: failed to fetch or store security group
+          schema:
+            type: string
+      summary: Insert / import a security group
+      tags:
+      - Security Rules
+  /security-rules/remove:
+    delete:
+      description: Deletes a single rule from a security group / firewall rule set.
+      parameters:
+      - description: Cloud provider (aws or gcp)
+        enum:
+        - aws
+        - gcp
+        in: query
+        name: provider
+        required: true
+        type: string
+      - description: Credential alias
+        in: query
+        name: account
+        required: true
+        type: string
+      - description: Region
+        in: query
+        name: region
+        required: true
+        type: string
+      - description: Security group / firewall ID
+        in: query
+        name: groupID
+        required: true
+        type: string
+      - description: Rule ID to remove
+        in: query
+        name: ruleID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: no content
+          schema:
+            type: string
+        "404":
+          description: rule not found
+          schema:
+            type: string
+      summary: Remove a security rule
+      tags:
+      - Security Rules
+  /vpc/describe/{vpcID}:
+    get:
+      description: Fetches subnets, routes, peerings and VPNs for the given VPC from
+        the cloud provider.
+      parameters:
+      - description: VPC ID
+        in: path
+        name: vpcID
+        required: true
+        type: string
+      - description: Cloud provider (aws or gcp)
+        enum:
+        - aws
+        - gcp
+        in: query
+        name: provider
+        required: true
+        type: string
+      - description: Credential alias
+        in: query
+        name: account
+        required: true
+        type: string
+      - description: Region
+        in: query
+        name: region
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/vpc.VPC'
+        "404":
+          description: VPC not found
+          schema:
+            type: string
+      summary: Describe a VPC
+      tags:
+      - VPC
+  /vpc/insert:
+    post:
+      consumes:
+      - application/json
+      description: Scrapes full VPC data from the cloud provider, persists it locally
+        and returns the result.
+      parameters:
+      - description: VPC identifiers
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/http.insertVPCRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/vpc.VPC'
+        "400":
+          description: invalid request body
+          schema:
+            type: string
+        "500":
+          description: failed to fetch or store VPC
+          schema:
+            type: string
+      summary: Insert / import a VPC
+      tags:
+      - VPC
+swagger: "2.0"

@@ -34,6 +34,17 @@ type analyseRequest struct {
 
 // AnalyseConnectivity handles POST requests to analyse connectivity
 // between a source VPC and destination CIDR across cloud providers.
+//
+//	@Summary		Analyse multi-cloud connectivity
+//	@Description	Checks whether a source VPC has a reachable path to the given destination CIDR, evaluating routes and security rules across providers.
+//	@Tags			Analyse
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		analyseRequest				true	"Connectivity query"
+//	@Success		200		{object}	network.ConnectivityResult
+//	@Failure		400		{string}	string	"invalid request body"
+//	@Failure		500		{string}	string	"analysis failed"
+//	@Router			/analyse [post]
 func (h *AnalyseHTTPHandler) AnalyseConnectivity(w http.ResponseWriter, r *http.Request) {
 	var req analyseRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

@@ -19,7 +19,18 @@ func NewSecurityHTTPHandler(svc primary.SecurityService) *SecurityHTTPHandler {
 }
 
 // DescribeSecurityGroup handles GET /security-rules/describe.
-// Query params: provider, account (credential alias), region, groupID.
+//
+//	@Summary		Describe a security group
+//	@Description	Returns all rules for the specified security group / firewall rule set.
+//	@Tags			Security Rules
+//	@Produce		json
+//	@Param			provider	query		string	true	"Cloud provider (aws or gcp)"	Enums(aws, gcp)
+//	@Param			account		query		string	true	"Credential alias"
+//	@Param			region		query		string	true	"Region"
+//	@Param			groupID		query		string	true	"Security group / firewall ID"
+//	@Success		200			{object}	security.SecurityGroup
+//	@Failure		404			{string}	string	"security group not found"
+//	@Router			/security-rules/describe [get]
 func (h *SecurityHTTPHandler) DescribeSecurityGroup(w http.ResponseWriter, r *http.Request) {
 	provider := r.URL.Query().Get("provider")
 	account := r.URL.Query().Get("account")
@@ -46,8 +57,17 @@ type insertSecurityGroupRequest struct {
 }
 
 // InsertRule handles POST /security-rules/insert.
-// Accepts basic resource identifiers, scrapes the full security group from the cloud provider,
-// persists it as a JSON file under infra/databases/text/, and returns the scraped data.
+//
+//	@Summary		Insert / import a security group
+//	@Description	Scrapes the full security group from the cloud provider, persists it locally and returns the result.
+//	@Tags			Security Rules
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		insertSecurityGroupRequest	true	"Security group identifiers"
+//	@Success		201		{object}	security.SecurityGroup
+//	@Failure		400		{string}	string	"invalid request body"
+//	@Failure		500		{string}	string	"failed to fetch or store security group"
+//	@Router			/security-rules/insert [post]
 func (h *SecurityHTTPHandler) InsertRule(w http.ResponseWriter, r *http.Request) {
 	var req insertSecurityGroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -71,7 +91,18 @@ func (h *SecurityHTTPHandler) InsertRule(w http.ResponseWriter, r *http.Request)
 }
 
 // RemoveRule handles DELETE /security-rules/remove.
-// Query params: provider, account (credential alias), region, groupID, ruleID.
+//
+//	@Summary		Remove a security rule
+//	@Description	Deletes a single rule from a security group / firewall rule set.
+//	@Tags			Security Rules
+//	@Param			provider	query		string	true	"Cloud provider (aws or gcp)"	Enums(aws, gcp)
+//	@Param			account		query		string	true	"Credential alias"
+//	@Param			region		query		string	true	"Region"
+//	@Param			groupID		query		string	true	"Security group / firewall ID"
+//	@Param			ruleID		query		string	true	"Rule ID to remove"
+//	@Success		204			{string}	string	"no content"
+//	@Failure		404			{string}	string	"rule not found"
+//	@Router			/security-rules/remove [delete]
 func (h *SecurityHTTPHandler) RemoveRule(w http.ResponseWriter, r *http.Request) {
 	provider := r.URL.Query().Get("provider")
 	account := r.URL.Query().Get("account")

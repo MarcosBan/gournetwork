@@ -21,7 +21,17 @@ func NewMapHTTPHandler(svc primary.MapService) *MapHTTPHandler {
 }
 
 // GetNetworkMap handles GET requests to retrieve the full network connection map.
-// Query params: providers (comma-separated, e.g. "aws,gcp"), account, region.
+//
+//	@Summary		Get network map
+//	@Description	Returns an overview of all VPCs and their connections (peerings, VPNs) as a graph structure.
+//	@Tags			Map
+//	@Produce		json
+//	@Param			providers	query		string	false	"Comma-separated list of providers (e.g. aws,gcp)"
+//	@Param			account		query		string	false	"Credential alias"
+//	@Param			region		query		string	false	"Region"
+//	@Success		200			{object}	network.NetworkMap
+//	@Failure		500			{string}	string	"failed to build network map"
+//	@Router			/map [get]
 func (h *MapHTTPHandler) GetNetworkMap(w http.ResponseWriter, r *http.Request) {
 	providersParam := r.URL.Query().Get("providers")
 	account := r.URL.Query().Get("account")

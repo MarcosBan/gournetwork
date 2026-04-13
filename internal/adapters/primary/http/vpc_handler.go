@@ -19,7 +19,18 @@ func NewVPCHTTPHandler(svc primary.VPCService) *VPCHTTPHandler {
 }
 
 // DescribeVPC handles GET /vpc/describe/{vpcID}.
-// Query params: provider, account (credential alias), region.
+//
+//	@Summary		Describe a VPC
+//	@Description	Fetches subnets, routes, peerings and VPNs for the given VPC from the cloud provider.
+//	@Tags			VPC
+//	@Produce		json
+//	@Param			vpcID		path		string	true	"VPC ID"
+//	@Param			provider	query		string	true	"Cloud provider (aws or gcp)"	Enums(aws, gcp)
+//	@Param			account		query		string	true	"Credential alias"
+//	@Param			region		query		string	true	"Region"
+//	@Success		200			{object}	vpc.VPC
+//	@Failure		404			{string}	string	"VPC not found"
+//	@Router			/vpc/describe/{vpcID} [get]
 func (h *VPCHTTPHandler) DescribeVPC(w http.ResponseWriter, r *http.Request) {
 	provider := r.URL.Query().Get("provider")
 	account := r.URL.Query().Get("account")
@@ -46,8 +57,17 @@ type insertVPCRequest struct {
 }
 
 // InsertVPC handles POST /vpc/insert.
-// Accepts basic resource identifiers, scrapes full VPC data from the cloud provider,
-// persists it as a JSON file under infra/databases/text/, and returns the scraped data.
+//
+//	@Summary		Insert / import a VPC
+//	@Description	Scrapes full VPC data from the cloud provider, persists it locally and returns the result.
+//	@Tags			VPC
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		insertVPCRequest	true	"VPC identifiers"
+//	@Success		201		{object}	vpc.VPC
+//	@Failure		400		{string}	string	"invalid request body"
+//	@Failure		500		{string}	string	"failed to fetch or store VPC"
+//	@Router			/vpc/insert [post]
 func (h *VPCHTTPHandler) InsertVPC(w http.ResponseWriter, r *http.Request) {
 	var req insertVPCRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

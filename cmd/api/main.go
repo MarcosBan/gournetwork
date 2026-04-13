@@ -1,3 +1,10 @@
+// Package main is the entry point for the gournetwork API server.
+//
+//	@title			gournetwork API
+//	@version		1.0
+//	@description	API tool to integrate with AWS/GCP and manage network core resources: VPCs, Security Groups, Firewall Rules and multi-cloud connectivity analysis.
+//	@host			localhost:8080
+//	@BasePath		/
 package main
 
 import (
@@ -10,8 +17,11 @@ import (
 	gcpadapter "gournetwork/internal/adapters/secondary/gcp"
 	"gournetwork/internal/adapters/secondary/storage"
 	"gournetwork/internal/config"
+	_ "gournetwork/docs"
 	"gournetwork/internal/ports/secondary"
 	"gournetwork/internal/service"
+
+	httpSwagger "github.com/swaggo/http-swagger"
 )
 
 func main() {
@@ -87,6 +97,9 @@ func main() {
 
 	// Network map overview (multicloud)
 	mux.HandleFunc("GET /map", mapHandler.GetNetworkMap)
+
+	// Swagger UI
+	mux.HandleFunc("/swagger/", httpSwagger.WrapHandler)
 
 	log.Printf("Starting gournetwork API server on %s", cfg.Global.Port)
 	if err = http.ListenAndServe(cfg.Global.Port, mux); err != nil {
