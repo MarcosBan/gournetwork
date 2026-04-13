@@ -3,39 +3,53 @@ package http
 import (
 	"encoding/json"
 	"net/http"
-	"time"
+	"strings"
 
 	"gournetwork/internal/domain/network"
-	"gournetwork/internal/ports/secondary"
+	"gournetwork/internal/ports/primary"
 )
 
-// MapHTTPHandler handles HTTP requests for the network map overview.
+// MapHTTPHandler handles HTTP requests for the network map overview,
+// delegating business logic to the MapService.
 type MapHTTPHandler struct {
-	vpcRepo secondary.CloudVPCRepository
+	svc primary.MapService
 }
 
 // NewMapHTTPHandler creates a new MapHTTPHandler.
-func NewMapHTTPHandler(vpcRepo secondary.CloudVPCRepository) *MapHTTPHandler {
-	return &MapHTTPHandler{vpcRepo: vpcRepo}
+func NewMapHTTPHandler(svc primary.MapService) *MapHTTPHandler {
+	return &MapHTTPHandler{svc: svc}
 }
 
 // GetNetworkMap handles GET requests to retrieve the full network connection map.
-// Query params: provider, account (credential alias), region.
+// Query params: providers (comma-separated, e.g. "aws,gcp"), account, region.
 func (h *MapHTTPHandler) GetNetworkMap(w http.ResponseWriter, r *http.Request) {
-	provider := r.URL.Query().Get("provider")
+	providersParam := r.URL.Query().Get("providers")
 	account := r.URL.Query().Get("account")
 	region := r.URL.Query().Get("region")
 
-	vpcs, err := h.vpcRepo.ListVPCs(r.Context(), provider, account, region)
-	if err != nil {
-		vpcs = nil // empty on error
+	// Support legacy single-provider param
+	if providersParam == "" {
+		providersParam = r.URL.Query().Get("provider")
 	}
 
-	// Stub: connections analysis is not yet implemented.
-	networkMap := network.NetworkMap{
-		VPCs:        vpcs,
-		Connections: []network.Connection{},
-		GeneratedAt: time.Now(),
+	var queries []network.ProviderQuery
+	if providersParam != "" {
+		for _, p := range strings.Split(providersParam, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				queries = append(queries, network.ProviderQuery{
+					Provider: p,
+					Account:  account,
+					Region:   region,
+				})
+			}
+		}
+	}
+
+	networkMap, err := h.svc.GetNetworkMap(r.Context(), queries)
+	if err != nil {
+		http.Error(w, "failed to build network map", http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")

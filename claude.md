@@ -2,56 +2,46 @@
 
 API Tool to integrate on AWS/GCP and manage network core resources as VPC Routes, Security Groups, Firewall Rules. Analyse connectivity and connection between resources.
 
-# Tech Approachs 
+# Tech Approaches
 
 - TDD (Tests before create code)
 - Hexagonal Architecture
+- Service layer between handlers and repositories
 
-# Routes 
+# Architecture
 
-/aws/vpc/describe/{vpc-id}
- - GET - describe (list subnetes and routes)
+```
+HTTP Handlers → Services (Use Cases) → Ports (Interfaces) → Domain Models
+                                            ↓
+                        Secondary Adapters (AWS/GCP/Storage)
+```
 
-/aws/vpc/insert
- - POST
- - vpc-id
- - region
- - account
+Provider is always a query parameter — routes are unified (no /aws/ or /gcp/ prefix).
 
-/gcp/vpc/describe/{vpc-id}
- - GET - describe (list subnets and routes)
+# Routes
 
-/gcp/vpc/insert
- - POST
- - vpc-id
- - region
- - project-id
+/vpc/describe/{vpcID}?provider=aws|gcp&account=<alias>&region=<r>
+ - GET - describe VPC (list subnets, routes, peerings, VPNs)
 
- /aws/security-rules/describe
-  - GET - describe security group based on id rules
+/vpc/insert
+ - POST - { provider, account, region, vpcID }
 
-/aws/security-rules/insert
-  - POST
-  - securit-group-ud
+/security-rules/describe?provider=aws|gcp&account=<alias>&region=<r>&groupID=<id>
+ - GET - describe security group based on id
 
-/aws/security-rules/remove
-  - DELETE - delete rule
-  
-/gcp/security-rules/describe
-  - GET - describe security group based on id rules
+/security-rules/insert
+ - POST - { provider, account, region, groupID }
 
-/gcp/security-rules/remove
-  - DELETE - delete rule
-
-/gcp/security-rules/insert
- - POST - update rule
+/security-rules/remove?provider=aws|gcp&account=<alias>&region=<r>&groupID=<id>&ruleID=<id>
+ - DELETE - delete rule
 
 /analyse
- - POST - source vpc and destination vpc ip range (return if theres connection )
+ - POST - multicloud connectivity analysis
+ - { source_provider, source_account, source_region, source_vpc, dest_provider, dest_account, dest_region, destination_cidr }
 
-/map 
- - GET - Overview map connection in a structure master json
+/map?providers=aws,gcp&account=<alias>&region=<r>
+ - GET - Overview map with VPCs and connections (peerings, VPNs) as graph
 
- # Database 
+# Database
 
- Files stored in infra/databases/text
+Files stored in infra/databases/text

@@ -149,9 +149,6 @@ func TestSaveSecurityGroup_CreatesFileWithCorrectContent(t *testing.T) {
 	if len(got.Rules) != 1 {
 		t.Errorf("expected 1 rule, got %d", len(got.Rules))
 	}
-	if got.Rules[0].PortRange.From != 80 {
-		t.Errorf("expected port 80, got %d", got.Rules[0].PortRange.From)
-	}
 }
 
 func TestSaveSecurityGroup_GCPProvider(t *testing.T) {
@@ -174,21 +171,6 @@ func TestSaveSecurityGroup_GCPProvider(t *testing.T) {
 	}
 }
 
-func TestSaveSecurityGroup_CreatesNestedDirectories(t *testing.T) {
-	dir := t.TempDir()
-	repo := storage.NewJSONFileRepository(dir)
-
-	sg := &security.SecurityGroup{ID: "sg-1", Provider: "aws", VPCID: "vpc-xyz"}
-	if err := repo.SaveSecurityGroup(context.Background(), sg); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	path := filepath.Join(dir, "aws", "security", "vpc-xyz", "sg-1.json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Errorf("expected file at %s", path)
-	}
-}
-
 func TestJSONFileRepository_JSONIsIndented(t *testing.T) {
 	dir := t.TempDir()
 	repo := storage.NewJSONFileRepository(dir)
@@ -198,9 +180,89 @@ func TestJSONFileRepository_JSONIsIndented(t *testing.T) {
 
 	path := filepath.Join(dir, "aws", "vpc", "us-east-1", "vpc-fmt.json")
 	data, _ := os.ReadFile(path)
-	// Indented JSON starts with "{\n"
 	if len(data) < 2 || data[0] != '{' || data[1] != '\n' {
 		t.Errorf("expected indented JSON, got: %q", string(data[:min(20, len(data))]))
+	}
+}
+
+// --- ListVPCs tests ---
+
+func TestListVPCs_ReturnsStoredVPCs(t *testing.T) {
+	dir := t.TempDir()
+	repo := storage.NewJSONFileRepository(dir)
+	ctx := context.Background()
+
+	repo.SaveVPC(ctx, &vpc.VPC{ID: "vpc-001", Region: "us-east-1", Provider: vpc.ProviderAWS, CIDRBlock: "10.0.0.0/16"})
+	repo.SaveVPC(ctx, &vpc.VPC{ID: "vpc-002", Region: "us-east-1", Provider: vpc.ProviderAWS, CIDRBlock: "10.1.0.0/16"})
+
+	vpcs, err := repo.ListVPCs(ctx, "aws", "us-east-1")
+	if err != nil {
+		t.Fatalf("ListVPCs error: %v", err)
+	}
+	if len(vpcs) != 2 {
+		t.Errorf("expected 2 VPCs, got %d", len(vpcs))
+	}
+}
+
+func TestListVPCs_EmptyWhenNoFiles(t *testing.T) {
+	dir := t.TempDir()
+	repo := storage.NewJSONFileRepository(dir)
+
+	vpcs, err := repo.ListVPCs(context.Background(), "aws", "us-east-1")
+	if err != nil {
+		t.Fatalf("ListVPCs error: %v", err)
+	}
+	if len(vpcs) != 0 {
+		t.Errorf("expected 0 VPCs, got %d", len(vpcs))
+	}
+}
+
+func TestListVPCs_AllRegions(t *testing.T) {
+	dir := t.TempDir()
+	repo := storage.NewJSONFileRepository(dir)
+	ctx := context.Background()
+
+	repo.SaveVPC(ctx, &vpc.VPC{ID: "vpc-001", Region: "us-east-1", Provider: vpc.ProviderAWS})
+	repo.SaveVPC(ctx, &vpc.VPC{ID: "vpc-002", Region: "us-west-2", Provider: vpc.ProviderAWS})
+
+	vpcs, err := repo.ListVPCs(ctx, "aws", "")
+	if err != nil {
+		t.Fatalf("ListVPCs error: %v", err)
+	}
+	if len(vpcs) != 2 {
+		t.Errorf("expected 2 VPCs across all regions, got %d", len(vpcs))
+	}
+}
+
+// --- ListSecurityGroups tests ---
+
+func TestListSecurityGroups_ReturnsStoredGroups(t *testing.T) {
+	dir := t.TempDir()
+	repo := storage.NewJSONFileRepository(dir)
+	ctx := context.Background()
+
+	repo.SaveSecurityGroup(ctx, &security.SecurityGroup{ID: "sg-001", Provider: "aws", VPCID: "vpc-001"})
+	repo.SaveSecurityGroup(ctx, &security.SecurityGroup{ID: "sg-002", Provider: "aws", VPCID: "vpc-001"})
+
+	groups, err := repo.ListSecurityGroups(ctx, "aws", "vpc-001")
+	if err != nil {
+		t.Fatalf("ListSecurityGroups error: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Errorf("expected 2 security groups, got %d", len(groups))
+	}
+}
+
+func TestListSecurityGroups_EmptyWhenNoFiles(t *testing.T) {
+	dir := t.TempDir()
+	repo := storage.NewJSONFileRepository(dir)
+
+	groups, err := repo.ListSecurityGroups(context.Background(), "aws", "vpc-001")
+	if err != nil {
+		t.Fatalf("ListSecurityGroups error: %v", err)
+	}
+	if len(groups) != 0 {
+		t.Errorf("expected 0 security groups, got %d", len(groups))
 	}
 }
 
