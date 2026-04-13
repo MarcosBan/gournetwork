@@ -5,30 +5,35 @@ import (
 	"net/http"
 
 	"gournetwork/internal/domain/network"
-	"gournetwork/internal/ports/secondary"
+	"gournetwork/internal/ports/primary"
 )
 
-// AnalyseHTTPHandler handles HTTP requests for connectivity analysis.
+// AnalyseHTTPHandler handles HTTP requests for connectivity analysis,
+// delegating business logic to the AnalyseService.
 type AnalyseHTTPHandler struct {
-	vpcRepo secondary.CloudVPCRepository
-	secRepo secondary.CloudSecurityRepository
+	svc primary.AnalyseService
 }
 
 // NewAnalyseHTTPHandler creates a new AnalyseHTTPHandler.
-func NewAnalyseHTTPHandler(vpcRepo secondary.CloudVPCRepository, secRepo secondary.CloudSecurityRepository) *AnalyseHTTPHandler {
-	return &AnalyseHTTPHandler{vpcRepo: vpcRepo, secRepo: secRepo}
+func NewAnalyseHTTPHandler(svc primary.AnalyseService) *AnalyseHTTPHandler {
+	return &AnalyseHTTPHandler{svc: svc}
 }
 
 // analyseRequest is the expected request body for the connectivity analysis endpoint.
 type analyseRequest struct {
-	Provider        string `json:"provider"`
-	Account         string `json:"account"`
-	Region          string `json:"region"`
-	SourceVPC       string `json:"source_vpc"`
-	DestinationCIDR string `json:"destination_cidr"`
+	SourceProvider string `json:"source_provider"`
+	SourceAccount  string `json:"source_account"`
+	SourceRegion   string `json:"source_region"`
+	SourceVPC      string `json:"source_vpc"`
+
+	DestProvider string `json:"dest_provider"`
+	DestAccount  string `json:"dest_account"`
+	DestRegion   string `json:"dest_region"`
+	DestCIDR     string `json:"destination_cidr"`
 }
 
-// AnalyseConnectivity handles POST requests to analyse connectivity between a source VPC and destination CIDR.
+// AnalyseConnectivity handles POST requests to analyse connectivity
+// between a source VPC and destination CIDR across cloud providers.
 func (h *AnalyseHTTPHandler) AnalyseConnectivity(w http.ResponseWriter, r *http.Request) {
 	var req analyseRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -36,34 +41,31 @@ func (h *AnalyseHTTPHandler) AnalyseConnectivity(w http.ResponseWriter, r *http.
 		return
 	}
 
-	if req.SourceVPC == "" || req.DestinationCIDR == "" {
+	if req.SourceVPC == "" || req.DestCIDR == "" {
 		http.Error(w, "source_vpc and destination_cidr are required", http.StatusBadRequest)
 		return
 	}
 
-	// Stub: attempt to retrieve the source VPC to validate it exists.
-	sourceVPC, err := h.vpcRepo.GetVPC(r.Context(), req.Provider, req.Account, req.Region, req.SourceVPC)
-	if err != nil || sourceVPC == nil {
-		result := network.ConnectivityResult{
-			Source:      req.SourceVPC,
-			Destination: req.DestinationCIDR,
-			Connected:   false,
-			Path:        []string{},
-			Reason:      "source VPC not found",
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(result)
-		return
+	// Default source_provider if not specified
+	if req.SourceProvider == "" {
+		req.SourceProvider = "aws"
 	}
 
-	// Stub connectivity result — full analysis logic to be implemented.
-	result := network.ConnectivityResult{
-		Source:      req.SourceVPC,
-		Destination: req.DestinationCIDR,
-		Connected:   true,
-		Path:        []string{req.SourceVPC, req.DestinationCIDR},
-		Reason:      "",
+	domainReq := network.AnalyseRequest{
+		SourceProvider: req.SourceProvider,
+		SourceAccount:  req.SourceAccount,
+		SourceRegion:   req.SourceRegion,
+		SourceVPC:      req.SourceVPC,
+		DestProvider:   req.DestProvider,
+		DestAccount:    req.DestAccount,
+		DestRegion:     req.DestRegion,
+		DestCIDR:       req.DestCIDR,
+	}
+
+	result, err := h.svc.AnalyseConnectivity(r.Context(), domainReq)
+	if err != nil {
+		http.Error(w, "analysis failed", http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
